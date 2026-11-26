@@ -1,0 +1,4294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSAYS — Mapa Geográfico 3D de Inspecciones & Supervisión (Lima y Callao)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    :root {
+      --ssays-green: #006837;
+      --ssays-green-light: #009640;
+      --ssays-cyan: #00bdf2;
+      --bg-deep: #060d14;
+      --panel-bg: rgba(9, 17, 26, 0.86);
+      --panel-border: rgba(56, 189, 248, 0.22);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body {
+      background: var(--bg-deep);
+      color: var(--text-main);
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      user-select: none;
+    }
+
+    #canvas3d {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+
+    #labelsLayer {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      overflow: hidden;
+    }
+
+    /* Nombres de distritos limpios en el mapa (solo visibles cuando hay zoom o son relevantes) */
+    .dist-name {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      color: rgba(148, 163, 184, 0.52);
+      text-transform: uppercase;
+      pointer-events: none;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+      white-space: nowrap;
+      transition: opacity 0.2s, color 0.2s;
+    }
+
+    .dist-name.highlighted {
+      color: #f8fafc;
+      font-size: 10.5px;
+      font-weight: 800;
+      background: rgba(15, 23, 42, 0.72);
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+
+    /* Callouts / Pines Elegantes de Ubicación de Inspección */
+    .pin-callout {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      pointer-events: auto;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transition: transform 0.18s ease, z-index 0s;
+      z-index: 12;
+    }
+
+    .pin-callout:hover {
+      transform: translate(-50%, -104%) scale(1.04);
+      z-index: 40;
+    }
+
+    .pin-callout.selected {
+      z-index: 35;
+      transform: translate(-50%, -104%) scale(1.05);
+    }
+
+    .pin-card {
+      background: rgba(8, 16, 26, 0.94);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      border-radius: 10px;
+      padding: 8px 11px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px);
+      min-width: 175px;
+      max-width: 230px;
+    }
+
+    .pin-callout.selected .pin-card {
+      border-color: var(--ssays-cyan);
+      box-shadow: 0 0 24px rgba(0, 189, 242, 0.55), 0 12px 30px rgba(0, 0, 0, 0.85);
+      background: rgba(11, 24, 38, 0.98);
+    }
+
+    .pin-callout.warn .pin-card { border-left: 3.5px solid var(--warn); }
+    .pin-callout.ok .pin-card { border-left: 3.5px solid var(--ok); }
+    .pin-callout.gps .pin-card { border-left: 3.5px solid var(--ssays-cyan); }
+    .pin-callout.muted .pin-card {
+      border-left: 3px solid #475569;
+      padding: 5px 8px;
+      min-width: auto;
+      opacity: 0.82;
+    }
+
+    .pin-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 3px;
+    }
+
+    .pin-dist {
+      font-size: 9.5px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      color: var(--ssays-cyan);
+      text-transform: uppercase;
+    }
+
+    .pin-pill {
+      font-size: 9px;
+      font-weight: 800;
+      padding: 1.5px 6px;
+      border-radius: 99px;
+    }
+    .pin-pill.ok { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .pin-pill.warn { background: rgba(245, 158, 11, 0.22); color: #fbbf24; }
+    .pin-pill.gps { background: rgba(0, 189, 242, 0.22); color: #38bdf8; }
+
+    .pin-client {
+      font-size: 11.5px;
+      font-weight: 800;
+      color: #ffffff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pin-site {
+      font-size: 10px;
+      color: #cbd5e1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pin-stem {
+      width: 2px;
+      height: 16px;
+      background: linear-gradient(180deg, rgba(0, 189, 242, 0.85), rgba(0, 189, 242, 0.1));
+    }
+
+    .pin-callout.warn .pin-stem {
+      background: linear-gradient(180deg, rgba(245, 158, 11, 0.9), rgba(245, 158, 11, 0.1));
+    }
+
+    .pin-callout.ok .pin-stem {
+      background: linear-gradient(180deg, rgba(16, 185, 129, 0.9), rgba(16, 185, 129, 0.1));
+    }
+
+    /* Barra Superior Minimalista y Ejecutiva */
+    .top-bar {
+      position: fixed;
+      top: 14px;
+      left: 16px;
+      right: 16px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      pointer-events: none;
+    }
+
+    .top-bar > * { pointer-events: auto; }
+
+    .brand-card {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(14px);
+      border-radius: 12px;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    }
+
+    .logo-badge {
+      background: #ffffff;
+      padding: 4px 10px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+    }
+
+    .brand-text h1 {
+      font-size: 13.5px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.2px;
+    }
+
+    .brand-text span {
+      font-size: 10.5px;
+      color: var(--ssays-cyan);
+      font-weight: 600;
+      display: block;
+    }
+
+    /* Conmutador Central */
+    .seg-control {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(14px);
+      border-radius: 12px;
+      padding: 5px;
+      display: flex;
+      gap: 5px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    }
+
+    .seg-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 7px 15px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .seg-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+
+    .seg-btn.active {
+      background: linear-gradient(135deg, #009640, #006837);
+      color: #fff;
+      box-shadow: 0 2px 12px rgba(0, 150, 64, 0.45);
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .action-btn {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(14px);
+      color: #e2e8f0;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    }
+
+    .action-btn:hover {
+      border-color: var(--ssays-cyan);
+      color: #fff;
+    }
+
+    .action-btn.gold {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      border-color: #fbbf24;
+      color: #090d0b;
+      font-weight: 800;
+    }
+
+    /* Paneles Laterales Flotantes (Más estrechos y limpios para lucir el 3D) */
+    .side-hud {
+      position: fixed;
+      top: 74px;
+      bottom: 58px;
+      width: 340px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(16px);
+      border-radius: 14px;
+      z-index: 15;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+    }
+
+    .side-left { left: 16px; }
+    .side-right { right: 16px; width: 355px; }
+
+    .hud-scroll {
+      padding: 14px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .hud-scroll::-webkit-scrollbar { width: 4px; }
+    .hud-scroll::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.3); border-radius: 4px; }
+
+    .hud-sec-title {
+      font-size: 10.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--ssays-cyan);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 5px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    /* Tarjetas de Ubicación Interactivas (Clic para volar al distrito en 3D) */
+    .loc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .loc-item {
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 9px;
+      padding: 9px 11px;
+      cursor: pointer;
+      transition: all 0.18s;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .loc-item:hover {
+      border-color: rgba(0, 189, 242, 0.5);
+      background: rgba(20, 34, 54, 0.85);
+      transform: translateX(2px);
+    }
+
+    .loc-item.active {
+      border-color: var(--ssays-cyan);
+      background: rgba(0, 189, 242, 0.14);
+      box-shadow: 0 0 16px rgba(0, 189, 242, 0.2);
+    }
+
+    .loc-row1 {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .loc-dist-badge {
+      font-size: 9.5px;
+      font-weight: 800;
+      color: var(--ssays-cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .loc-title {
+      font-size: 12px;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .loc-sub {
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+
+    /* Box de detalle */
+    .detail-card {
+      background: rgba(15, 23, 42, 0.78);
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      border-radius: 10px;
+      padding: 11px 12px;
+    }
+
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      padding: 4px 0;
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.07);
+    }
+    .kv-row:last-child { border-bottom: none; }
+    .kv-row span:first-child { color: var(--text-muted); }
+    .kv-row span:last-child { font-weight: 700; text-align: right; color: #f1f5f9; }
+
+    /* KPIs */
+    .kpi-2x2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .kpi-box {
+      background: rgba(15, 23, 42, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 9px;
+      padding: 9px 10px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .kpi-box::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2.5px;
+      background: var(--ssays-cyan);
+    }
+    .kpi-box.green::after { background: var(--ok); }
+    .kpi-box.amber::after { background: var(--warn); }
+
+    .kpi-box .lbl { font-size: 9.5px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; }
+    .kpi-box .val { font-size: 18px; font-weight: 800; color: #fff; margin: 2px 0; }
+    .kpi-box .sub { font-size: 10px; color: #94a3b8; }
+
+    /* Barras de Calidad */
+    .q-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin-bottom: 7px;
+    }
+    .q-row:last-child { margin-bottom: 0; }
+    .q-head { display: flex; justify-content: space-between; font-size: 11px; }
+    .q-track {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 99px;
+      overflow: hidden;
+      display: flex;
+    }
+    .q-ok { background: var(--ok); height: 100%; }
+    .q-warn { background: var(--warn); height: 100%; }
+
+    /* Alertas */
+    .alert-box {
+      background: rgba(15, 23, 42, 0.8);
+      border-left: 3px solid var(--warn);
+      border-radius: 7px;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.35;
+      margin-bottom: 6px;
+    }
+    .alert-box.crit { border-left-color: var(--danger); background: rgba(69, 10, 10, 0.35); }
+    .alert-box.good { border-left-color: var(--ok); background: rgba(6, 78, 59, 0.28); }
+    .alert-box strong { display: block; color: #fff; margin-bottom: 2px; }
+    .alert-box span { color: #cbd5e1; }
+
+    /* Toggle switches */
+    .switch-pill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      color: #cbd5e1;
+    }
+
+    /* Barra Inferior de Navegación Geográfica */
+    .bottom-dock {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(14px);
+      border-radius: 12px;
+      padding: 6px 10px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+    }
+
+    .dock-btn {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #cbd5e1;
+      padding: 5px 10px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.18s;
+      white-space: nowrap;
+    }
+
+    .dock-btn:hover { border-color: var(--ssays-cyan); color: #fff; }
+    .dock-btn.active { background: var(--ssays-cyan); color: #06121e; border-color: var(--ssays-cyan); }
+
+    /* Tarjeta Caso Guiado */
+    .tour-card {
+      position: fixed;
+      bottom: 62px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 420px;
+      max-width: calc(100vw - 750px);
+      background: rgba(8, 16, 26, 0.96);
+      border: 1px solid #f59e0b;
+      border-radius: 12px;
+      padding: 13px 15px;
+      z-index: 30;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.85);
+      display: none;
+    }
+    .tour-card.open { display: block; }
+
+    /* Modal Tabla */
+    .modal-bg {
+      position: fixed;
+      inset: 60px 36px;
+      background: rgba(6, 13, 20, 0.98);
+      border: 1px solid var(--ssays-cyan);
+      border-radius: 14px;
+      z-index: 50;
+      display: none;
+      flex-direction: column;
+      padding: 18px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.92);
+    }
+    .modal-bg.open { display: flex; }
+    .tbl-scroll { flex: 1; overflow: auto; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    th { position: sticky; top: 0; background: #0f172a; color: var(--ssays-cyan); padding: 9px 10px; text-align: left; }
+    td { padding: 7px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+
+    /* Live Sync Bar & Modal */
+    .sync-pill {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #6ee7b7;
+      padding: 6px 11px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .sync-pill:hover {
+      border-color: var(--ssays-cyan);
+      color: #fff;
+    }
+    .sync-pill.syncing {
+      border-color: var(--ssays-cyan);
+      color: var(--ssays-cyan);
+    }
+    .sync-pill.offline {
+      background: rgba(245, 158, 11, 0.14);
+      border-color: rgba(245, 158, 11, 0.4);
+      color: #fcd34d;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+      animation: blinkDot 1.6s infinite;
+    }
+    .sync-pill.offline .pulse-dot {
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+    }
+    @keyframes blinkDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.8); }
+    }
+
+    .sync-modal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 520px;
+      max-width: calc(100vw - 32px);
+      background: rgba(8, 16, 26, 0.98);
+      border: 1px solid var(--ssays-cyan);
+      border-radius: 14px;
+      padding: 20px;
+      z-index: 60;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.92);
+    }
+    .sync-modal.open { display: flex; }
+    .sync-input {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #f8fafc;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      outline: none;
+    }
+    .sync-input:focus { border-color: var(--ssays-cyan); }
+    .sync-note {
+      background: rgba(15, 23, 42, 0.75);
+      border-left: 3px solid var(--ssays-cyan);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #cbd5e1;
+      line-height: 1.4;
+    }
+
+
+    /* Botones de descarga de Constancia / Acta */
+    .acta-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 9px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .btn-acta {
+      flex: 1;
+      background: linear-gradient(135deg, #009640, #006837);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #fff;
+      padding: 6px 9px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.18s;
+      text-decoration: none;
+    }
+    .btn-acta:hover {
+      filter: brightness(1.12);
+      transform: translateY(-1px);
+    }
+    .btn-acta.secondary {
+      background: rgba(0, 189, 242, 0.14);
+      border-color: rgba(0, 189, 242, 0.45);
+      color: #38bdf8;
+    }
+    .btn-tbl-dl {
+      background: rgba(0, 150, 64, 0.22);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #6ee7b7;
+      padding: 3px 8px;
+      border-radius: 5px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .btn-tbl-dl:hover {
+      background: #009640;
+      color: #fff;
+    }
+
+    /* Modal Vista Previa Constancia Oficial SSAYS FO-04 */
+    .acta-modal {
+      position: fixed;
+      inset: 28px 60px;
+      background: rgba(6, 13, 20, 0.98);
+      border: 1px solid var(--ssays-cyan);
+      border-radius: 14px;
+      z-index: 70;
+      display: none;
+      flex-direction: column;
+      padding: 16px 20px;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.95);
+    }
+    .acta-modal.open { display: flex; }
+    .acta-paper-wrap {
+      flex: 1;
+      overflow-y: auto;
+      background: #334155;
+      border-radius: 8px;
+      padding: 24px;
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      align-items: center;
+    }
+    .fo04-page {
+      width: 794px;
+      min-height: 1123px;
+      background: #ffffff;
+      color: #111827;
+      padding: 28px 32px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 10px;
+      line-height: 1.3;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+    }
+    .fo04-box {
+      border: 1px solid #444444;
+      margin-bottom: 5px;
+    }
+    .fo04-sec-bar {
+      background: #f1f5f9;
+      border-bottom: 1px solid #444444;
+      padding: 3px 6px;
+      font-weight: 700;
+      font-size: 9.5px;
+      color: #0f172a;
+      text-transform: uppercase;
+    }
+    .fo04-tbl {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9.5px;
+    }
+    .fo04-tbl th, .fo04-tbl td {
+      border: 1px solid #444444;
+      padding: 3.5px 6px;
+      color: #111827;
+      vertical-align: middle;
+    }
+    .fo04-tbl th {
+      background: #f1f5f9;
+      font-weight: 700;
+      text-align: center;
+    }
+    .fo04-field-row {
+      padding: 4px 7px;
+      border-bottom: 1px solid #cbd5e1;
+      font-size: 9.5px;
+    }
+    .fo04-field-row:last-child { border-bottom: none; }
+    .fo04-chk {
+      display: inline-block;
+      font-family: 'Courier New', monospace;
+      font-weight: 700;
+      margin: 0 3px;
+    }
+    .fo04-sign-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-top: 10px;
+    }
+    .fo04-sign-box {
+      border: 1px solid #444444;
+      height: 82px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 6px 8px;
+      font-size: 9.5px;
+    }
+    .fo04-footer {
+      border-top: 1px solid #94a3b8;
+      padding-top: 4px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 8.5px;
+      color: #475569;
+      margin-top: 8px;
+    }
+    .fo04-photo-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 12px;
+    }
+    .fo04-photo-card {
+      border: 1px solid #444444;
+      padding: 6px;
+      background: #fff;
+    }
+    .fo04-photo-frame {
+      width: 100%;
+      height: 230px;
+      background: #e2e8f0;
+      border: 1px solid #cbd5e1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #475569;
+      overflow: hidden;
+      margin-bottom: 6px;
+    }
+
+    /* Selector de Periodo (Manual + Relativo estilo Power BI / Looker Studio) */
+    .period-bar {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .period-trigger {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #f8fafc;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    .period-trigger:hover {
+      border-color: var(--ssays-cyan);
+      background: rgba(20, 34, 54, 0.95);
+    }
+    .period-trigger .p-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+    }
+    .period-trigger .p-badge {
+      font-size: 9.5px;
+      font-weight: 800;
+      padding: 1.5px 6px;
+      border-radius: 5px;
+      background: rgba(0, 189, 242, 0.18);
+      color: var(--ssays-cyan);
+    }
+    .period-popover {
+      position: fixed;
+      top: 132px;
+      left: 368px;
+      width: 295px;
+      background: #0b1523;
+      border: 1px solid var(--ssays-cyan);
+      border-radius: 12px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.88);
+      z-index: 80;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+    }
+    .period-popover.open { display: flex; }
+    .pp-tabs {
+      display: flex;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(6, 13, 20, 0.7);
+    }
+    .pp-tab {
+      flex: 1;
+      padding: 9px 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-bottom: 2.5px solid transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.15s;
+    }
+    .pp-tab:hover { color: #fff; }
+    .pp-tab.active {
+      color: #34d399;
+      border-bottom-color: #009640;
+      background: rgba(0, 150, 64, 0.1);
+    }
+    .pp-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .cal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 800;
+      color: #f8fafc;
+    }
+    .cal-nav {
+      display: flex;
+      gap: 4px;
+    }
+    .cal-nav button {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #cbd5e1;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .cal-nav button:hover {
+      border-color: var(--ssays-cyan);
+      color: #fff;
+    }
+    .cal-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      text-align: center;
+      font-size: 9.5px;
+      font-weight: 700;
+      color: #64748b;
+    }
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px 0;
+    }
+    .cal-day {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: #e2e8f0;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.12s;
+    }
+    .cal-day.other-month { color: #475569; }
+    .cal-day:hover { background: rgba(0, 189, 242, 0.2); border-radius: 6px; }
+    .cal-day.in-range {
+      background: rgba(0, 150, 64, 0.26);
+      color: #a7f3d0;
+    }
+    .cal-day.range-start {
+      background: #006837 !important;
+      color: #ffffff !important;
+      font-weight: 800;
+      border-radius: 99px 0 0 99px;
+    }
+    .cal-day.range-end {
+      background: #006837 !important;
+      color: #ffffff !important;
+      font-weight: 800;
+      border-radius: 0 99px 99px 0;
+    }
+    .cal-day.range-start.range-end {
+      border-radius: 99px;
+    }
+    .cal-day.has-data::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #00bdf2;
+    }
+    .rel-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .rel-opt {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: #cbd5e1;
+      padding: 7px 10px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.15s;
+    }
+    .rel-opt:hover { border-color: var(--ssays-cyan); color: #fff; }
+    .rel-opt.active {
+      background: rgba(0, 150, 64, 0.24);
+      border-color: #009640;
+      color: #6ee7b7;
+    }
+    .pp-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 9px 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(6, 13, 20, 0.65);
+    }
+    .btn-pp-clear {
+      background: transparent;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #94a3b8;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-pp-clear:hover { color: #fff; border-color: #fff; }
+    .btn-pp-apply {
+      background: #006837;
+      border: 1px solid #009640;
+      color: #ffffff;
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .btn-pp-apply:hover { background: #008245; }
+
+
+    /* Filtro Único Global de Periodo en Barra Superior */
+    .global-period-pill {
+      background: var(--panel-bg);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      backdrop-filter: blur(14px);
+      border-radius: 12px;
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    }
+    .global-period-pill:hover {
+      border-color: var(--ssays-cyan);
+      background: rgba(15, 28, 44, 0.95);
+    }
+    .global-period-pill.filtered {
+      border-color: #10b981;
+      background: rgba(6, 40, 28, 0.92);
+    }
+    .gp-badge {
+      font-size: 9.5px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: rgba(0, 189, 242, 0.18);
+      color: var(--ssays-cyan);
+    }
+    .global-period-pill.filtered .gp-badge {
+      background: rgba(16, 185, 129, 0.25);
+      color: #34d399;
+    }
+    .pp-range-inputs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.85);
+      padding: 7px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .pp-range-box {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .pp-range-box label {
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      color: var(--ssays-cyan);
+    }
+    .pp-range-box input[type="date"] {
+      background: #060d14;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #f8fafc;
+      font-size: 10.5px;
+      padding: 3px 5px;
+      border-radius: 5px;
+      outline: none;
+      width: 100%;
+      color-scheme: dark;
+    }
+    .pp-range-box input[type="date"]:focus {
+      border-color: #10b981;
+    }
+
+  </style>
+</head>
+<body>
+
+  <div id="canvas3d"></div>
+  <div id="labelsLayer"></div>
+
+  <!-- BARRA SUPERIOR -->
+  <header class="top-bar">
+    <div class="brand-card">
+      <div class="logo-badge">
+        <svg viewBox="0 0 350 90" height="24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M15 15 C35 12, 60 12, 75 15 C85 17, 85 30, 75 33 C55 35, 30 35, 15 33 C5 31, 5 17, 15 15 Z" fill="#006837" />
+          <path d="M10 40 C35 38, 55 38, 80 40 C85 41, 85 51, 80 52 C55 54, 35 54, 10 52 C5 51, 5 41, 10 40 Z" fill="#00BDF2" />
+          <path d="M15 59 C30 57, 55 57, 75 59 C85 61, 85 75, 75 77 C60 80, 35 80, 15 77 C5 75, 5 61, 15 59 Z" fill="#006837" />
+          <text x="95" y="65" font-family="'Segoe UI', sans-serif" font-weight="900" font-size="52" fill="#006837" letter-spacing="3">SSAYS</text>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>Mapa Geográfico 3D — Lima y Callao</h1>
+        <span>Localización Distrital de Supervisiones &amp; GPS</span>
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:8px;">
+      <div class="seg-control">
+        <button class="seg-btn active" id="btnModInsp" onclick="setModule('inspecciones')">
+          📋 Inspecciones &amp; Calidad
+        </button>
+        <button class="seg-btn" id="btnModAsist" onclick="setModule('asistencias')">
+          📍 Asistencia &amp; Geocercas GPS
+        </button>
+      </div>
+
+      <!-- FILTRO ÚNICO GLOBAL DE PERIODO (CONTROLA AMBOS CUADROS + MAPA 3D) -->
+      <div class="global-period-pill" id="globalPeriodBtn" onclick="togglePeriodPopover(event)" title="Filtrar por Fecha de Inicio y Fecha Final ambos cuadros y el mapa 3D">
+        <span>📅</span>
+        <div style="display:flex; flex-direction:column; line-height:1.15;">
+          <span style="font-size:9px; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:800;">Periodo Global</span>
+          <span id="globalPeriodLabel" style="font-size:11.5px; font-weight:800; color:#f8fafc;">Todo el historial</span>
+        </div>
+        <span id="globalPeriodBadge" class="gp-badge">TODOS ▾</span>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <div class="sync-pill" id="syncStatusPill" onclick="toggleSyncModal()" title="Configurar sincronización automática con Google Sheets">
+        <span class="pulse-dot"></span>
+        <span id="syncStatusText">Sincronizando Sheet...</span>
+      </div>
+      <button class="action-btn" onclick="syncFromGoogleSheet(true)" title="Forzar actualización desde Google Sheets">🔄 Sync</button>
+      <button class="action-btn gold" onclick="toggleTour()">▶ Recorrido</button>
+      <button class="action-btn" onclick="toggleModal()">📊 Tabla</button>
+    </div>
+  </header>
+
+  <!-- PANEL IZQUIERDO: EXPLORADOR DE UBICACIONES SUPERVISIONADAS -->
+  <aside class="side-hud side-left">
+    <div class="hud-scroll" id="leftHud"></div>
+  </aside>
+
+  <!-- PANEL DERECHO: INDICADORES DE CALIDAD Y ALERTAS -->
+  <aside class="side-hud side-right">
+    <div class="hud-scroll" id="rightHud"></div>
+  </aside>
+
+  <!-- TOUR GUIADO -->
+  <div class="tour-card" id="tourCard">
+    <div style="font-size:10px; font-weight:800; color:#f59e0b; text-transform:uppercase;" id="tKicker">UBICACIÓN 1 / 4</div>
+    <div style="font-size:13.5px; font-weight:800; color:#fff; margin:3px 0 5px;" id="tTitle">...</div>
+    <div style="font-size:11.5px; color:#cbd5e1; line-height:1.45;" id="tBody">...</div>
+    <div style="display:flex; justify-content:space-between; margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08);">
+      <button class="dock-btn" onclick="toggleTour()">Cerrar</button>
+      <div style="display:flex; gap:6px;">
+        <button class="dock-btn" onclick="stepTour(-1)">← Anterior</button>
+        <button class="dock-btn active" onclick="stepTour(1)">Siguiente →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DOCK INFERIOR DE NAVEGACIÓN POR ZONA -->
+  <nav class="bottom-dock">
+    <button class="dock-btn active" id="camAll" onclick="flyToPreset('all')">🗺️ Vista General Lima</button>
+    <button class="dock-btn" id="camSur" onclick="flyToPreset('sur')">🚛 Lurín (Sodimac)</button>
+    <button class="dock-btn" id="camCallao" onclick="flyToPreset('callao')">⚓ Carmen de la Legua (Alicorp)</button>
+    <button class="dock-btn" id="camEste" onclick="flyToPreset('este')">🏦 Huachipa (Financiera)</button>
+    <button class="dock-btn" id="camNorte" onclick="flyToPreset('norte')">🏢 S.M. Porres (Omnilife)</button>
+    <button class="dock-btn" id="camCentro" onclick="flyToPreset('centro')">📍 Pueblo Libre (Sede SSAYS)</button>
+  </nav>
+
+
+  <!-- MODAL CONFIGURACIÓN GOOGLE SHEETS LIVE SYNC -->
+  <div class="sync-modal" id="syncModal">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 style="font-size:15px; color:#fff;">🔗 Sincronización Automática con Google Sheets</h3>
+      <button class="action-btn" style="padding:4px 9px; border-color:var(--danger); color:#fca5a5;" onclick="toggleSyncModal()">✕</button>
+    </div>
+
+    <div class="sync-note">
+      <strong>Cómo funciona en tiempo real:</strong> Este Gemelo Digital lee directamente las pestañas <code>INFORMES_DATA</code>, <code>Asistencias</code> y <code>bdatos</code> desde tu enlace de Google Sheets cada 30 segundos, sin necesidad de descargar ni subir archivos Excel.
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:5px;">
+      <label style="font-size:10px; font-weight:800; color:var(--ssays-cyan); text-transform:uppercase;">Enlace de Google Sheets (Pestañas bdatos / INFORMES_DATA / Asistencias)</label>
+      <input type="text" id="gsheetUrlInput" class="sync-input" value="https://docs.google.com/spreadsheets/d/1g3LzH-UwpB03-71HvubThG4S9fvJt-dk0nvResR5oZo/edit?usp=sharing" placeholder="Pega aquí el link de tu Google Sheet...">
+    </div>
+
+    <div style="display:flex; gap:10px; align-items:center;">
+      <div style="flex:1; display:flex; flex-direction:column; gap:5px;">
+        <label style="font-size:10px; font-weight:800; color:var(--ssays-cyan); text-transform:uppercase;">Frecuencia de Auto-Sincronización</label>
+        <select id="syncIntervalSelect" class="sync-input" onchange="restartAutoSync()">
+          <option value="15000">Cada 15 segundos (Tiempo Real)</option>
+          <option value="30000" selected>Cada 30 segundos (Recomendado)</option>
+          <option value="60000">Cada 1 minuto</option>
+          <option value="0">Manual (Solo al presionar Sync)</option>
+        </select>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:5px;">
+        <label style="font-size:10px; font-weight:800; color:transparent;">.</label>
+        <label class="action-btn" style="cursor:pointer; justify-content:center;">
+          📥 O cargar .xlsx local
+          <input type="file" id="excelFile" accept=".xlsx,.xlsm,.xls" style="display:none;" onchange="handleExcel(event); toggleSyncModal();">
+        </label>
+      </div>
+    </div>
+
+    <div id="syncDiagMsg" style="font-size:11px; color:#94a3b8; background:rgba(0,0,0,0.35); padding:8px 10px; border-radius:7px;">
+      Estado: Listo para conectar con tu hoja de cálculo.
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:4px;">
+      <button class="action-btn" onclick="toggleSyncModal()">Cerrar</button>
+      <button class="action-btn gold" onclick="saveAndSyncNow()">💾 Guardar y Sincronizar Ahora</button>
+    </div>
+  </div>
+
+  <!-- MODAL TABLA -->
+  <div class="modal-bg" id="matrixModal">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 style="font-size:15px; color:#fff;" id="modalTitle">Detalle de Inspecciones</h3>
+      <div style="display:flex; gap:8px;">
+        <button class="action-btn gold" onclick="exportExcel()">📗 Exportar Excel (.xlsx)</button>
+        <button class="action-btn" onclick="exportCSV()">📥 Exportar CSV</button>
+        <button class="action-btn" style="border-color:var(--danger); color:#fca5a5;" onclick="toggleModal()">✕ Cerrar</button>
+      </div>
+    </div>
+    <div class="tbl-scroll" id="modalTable"></div>
+  </div>
+
+
+  <!-- MODAL VISTA PREVIA Y DESCARGA DE CONSTANCIA DE SUPERVISIÓN -->
+
+  <!-- POPOVER SELECTOR DE PERIODO (MANUAL + RELATIVO) -->
+  <div class="period-popover" id="periodPopover">
+    <div class="pp-tabs">
+      <button class="pp-tab active" id="ppTabManual" onclick="switchPeriodTab('manual')">📅 Manual</button>
+      <button class="pp-tab" id="ppTabRelative" onclick="switchPeriodTab('relative')">🔄 Relativo</button>
+    </div>
+    <div class="pp-body" id="ppBodyContent"></div>
+    <div class="pp-footer">
+      <button class="btn-pp-clear" onclick="clearPeriodFilter()">Todo el historial</button>
+      <button class="btn-pp-apply" onclick="applyPeriodFilter()">Apply</button>
+    </div>
+  </div>
+
+  <div class="acta-modal" id="actaModal">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <div>
+        <h3 style="font-size:15px; color:#fff;" id="actaModalTitle">Constancia de Supervisión SSAYS</h3>
+        <span style="font-size:11px; color:var(--text-muted);" id="actaModalSub">Documento oficial listo para guardar como PDF o descargar</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <a id="btnDrivePdfLink" href="#" target="_blank" class="action-btn" style="display:none; border-color:#10b981; color:#6ee7b7; text-decoration:none;">
+          🔗 Abrir PDF Original (Drive)
+        </a>
+        <button class="action-btn gold" onclick="downloadOfficialFO04PDF()">📥 Descargar PDF Oficial (FO-04)</button>
+        <button class="action-btn" onclick="printCurrentActaPDF()">🖨️ Imprimir</button>
+        <button class="action-btn" style="border-color:var(--danger); color:#fca5a5;" onclick="closeActaModal()">✕ Cerrar</button>
+      </div>
+    </div>
+    <div class="acta-paper-wrap" id="actaPaperWrap"></div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // 1. DATOS DE LIMA METROPOLITANA + BASE DE DATOS SSAYS
+    // =========================================================================
+    let DB = {"districts":[{"id":"VENTANILLA","name":"Ventanilla","zone":"CALLAO","center":[-77.128,-11.875],"poly":[[-77.162,-11.835],[-77.105,-11.835],[-77.098,-11.915],[-77.152,-11.925]]},{"id":"CALLAO","name":"Callao","zone":"CALLAO","center":[-77.125,-11.995],"poly":[[-77.152,-11.925],[-77.098,-11.915],[-77.092,-11.985],[-77.115,-12.032],[-77.152,-12.062]]},{"id":"CARMEN DE LA LEGUA","name":"Carmen de la Legua","zone":"CALLAO","center":[-77.098,-12.046],"poly":[[-77.115,-12.032],[-77.084,-12.032],[-77.084,-12.058],[-77.115,-12.058]]},{"id":"BELLAVISTA","name":"Bellavista / La Perla","zone":"CALLAO","center":[-77.122,-12.066],"poly":[[-77.152,-12.062],[-77.115,-12.058],[-77.102,-12.08],[-77.136,-12.08]]},{"id":"PUENTE PIEDRA","name":"Puente Piedra","zone":"LIMA NORTE","center":[-77.076,-11.875],"poly":[[-77.105,-11.835],[-77.048,-11.835],[-77.052,-11.918],[-77.098,-11.915]]},{"id":"CARABAYLLO","name":"Carabayllo","zone":"LIMA NORTE","center":[-77.012,-11.875],"poly":[[-77.048,-11.835],[-76.955,-11.835],[-76.97,-11.918],[-77.052,-11.918]]},{"id":"COMAS","name":"Comas","zone":"LIMA NORTE","center":[-77.042,-11.945],"poly":[[-77.065,-11.918],[-77.008,-11.918],[-77.015,-11.972],[-77.065,-11.972]]},{"id":"LOS OLIVOS","name":"Los Olivos","zone":"LIMA NORTE","center":[-77.078,-11.962],"poly":[[-77.098,-11.918],[-77.065,-11.918],[-77.065,-11.998],[-77.094,-11.998]]},{"id":"SAN MARTIN DE PORRES","name":"San Martín de Porres","zone":"LIMA NORTE","center":[-77.08,-12.015],"poly":[[-77.105,-11.985],[-77.065,-11.998],[-77.052,-12.032],[-77.115,-12.032]]},{"id":"INDEPENDENCIA","name":"Independencia","zone":"LIMA NORTE","center":[-77.048,-11.99],"poly":[[-77.065,-11.972],[-77.026,-11.972],[-77.03,-12.012],[-77.065,-12.005]]},{"id":"SAN JUAN DE LURIGANCHO","name":"San Juan de Lurigancho","zone":"LIMA ESTE","center":[-76.992,-11.982],"poly":[[-77.026,-11.925],[-76.952,-11.925],[-76.958,-12.03],[-77.02,-12.03]]},{"id":"RIMAC","name":"Rímac","zone":"LIMA CENTRO","center":[-77.032,-12.024],"poly":[[-77.052,-12.012],[-77.018,-12.012],[-77.015,-12.04],[-77.048,-12.04]]},{"id":"LURIGANCHO-CHOSICA","name":"Lurigancho / Huachipa","zone":"LIMA ESTE","center":[-76.912,-12.008],"poly":[[-76.952,-11.96],[-76.842,-11.96],[-76.852,-12.042],[-76.952,-12.042]]},{"id":"EL AGUSTINO","name":"El Agustino","zone":"LIMA ESTE","center":[-76.998,-12.045],"poly":[[-77.015,-12.03],[-76.98,-12.03],[-76.98,-12.062],[-77.015,-12.062]]},{"id":"SANTA ANITA","name":"Santa Anita","zone":"LIMA ESTE","center":[-76.962,-12.046],"poly":[[-76.98,-12.03],[-76.94,-12.03],[-76.94,-12.062],[-76.98,-12.062]]},{"id":"ATE","name":"Ate Vitarte","zone":"LIMA ESTE","center":[-76.902,-12.056],"poly":[[-76.94,-12.035],[-76.852,-12.042],[-76.862,-12.085],[-76.94,-12.075]]},{"id":"LA MOLINA","name":"La Molina","zone":"LIMA ESTE","center":[-76.932,-12.09],"poly":[[-76.966,-12.065],[-76.885,-12.075],[-76.895,-12.126],[-76.966,-12.116]]},{"id":"CERCADO DE LIMA","name":"Cercado de Lima","zone":"LIMA CENTRO","center":[-77.058,-12.05],"poly":[[-77.084,-12.032],[-77.015,-12.04],[-77.022,-12.066],[-77.084,-12.06]]},{"id":"BREÑA","name":"Breña","zone":"LIMA CENTRO","center":[-77.05,-12.06],"poly":[[-77.06,-12.05],[-77.04,-12.05],[-77.04,-12.07],[-77.06,-12.07]]},{"id":"PUEBLO LIBRE","name":"Pueblo Libre","zone":"LIMA CENTRO","center":[-77.066,-12.076],"poly":[[-77.082,-12.06],[-77.054,-12.066],[-77.054,-12.088],[-77.082,-12.085]]},{"id":"SAN MIGUEL","name":"San Miguel","zone":"LIMA CENTRO","center":[-77.094,-12.078],"poly":[[-77.11,-12.06],[-77.082,-12.06],[-77.082,-12.095],[-77.108,-12.092]]},{"id":"MAGDALENA DEL MAR","name":"Magdalena","zone":"LIMA CENTRO","center":[-77.07,-12.092],"poly":[[-77.082,-12.085],[-77.056,-12.088],[-77.056,-12.102],[-77.082,-12.098]]},{"id":"JESUS MARIA","name":"Jesús María","zone":"LIMA CENTRO","center":[-77.045,-12.076],"poly":[[-77.054,-12.064],[-77.034,-12.064],[-77.034,-12.088],[-77.054,-12.088]]},{"id":"LINCE","name":"Lince","zone":"LIMA CENTRO","center":[-77.033,-12.084],"poly":[[-77.042,-12.078],[-77.022,-12.078],[-77.022,-12.092],[-77.042,-12.092]]},{"id":"LA VICTORIA","name":"La Victoria","zone":"LIMA CENTRO","center":[-77.018,-12.072],"poly":[[-77.032,-12.062],[-77.002,-12.062],[-77.002,-12.086],[-77.032,-12.082]]},{"id":"SAN LUIS","name":"San Luis","zone":"LIMA CENTRO","center":[-76.995,-12.074],"poly":[[-77.004,-12.062],[-76.984,-12.062],[-76.984,-12.085],[-77.004,-12.085]]},{"id":"SAN ISIDRO","name":"San Isidro","zone":"LIMA MODERNA","center":[-77.038,-12.1],"poly":[[-77.056,-12.088],[-77.018,-12.088],[-77.018,-12.11],[-77.056,-12.108]]},{"id":"SAN BORJA","name":"San Borja","zone":"LIMA MODERNA","center":[-77.0,-12.096],"poly":[[-77.018,-12.085],[-76.98,-12.085],[-76.98,-12.112],[-77.018,-12.11]]},{"id":"MIRAFLORES","name":"Miraflores","zone":"LIMA MODERNA","center":[-77.032,-12.12],"poly":[[-77.05,-12.108],[-77.012,-12.11],[-77.015,-12.134],[-77.045,-12.13]]},{"id":"SURQUILLO","name":"Surquillo","zone":"LIMA MODERNA","center":[-77.01,-12.115],"poly":[[-77.022,-12.108],[-76.996,-12.108],[-76.996,-12.124],[-77.022,-12.124]]},{"id":"SANTIAGO DE SURCO","name":"Surco","zone":"LIMA MODERNA","center":[-76.98,-12.136],"poly":[[-77.012,-12.112],[-76.954,-12.112],[-76.964,-12.165],[-77.008,-12.162]]},{"id":"BARRANCO","name":"Barranco","zone":"LIMA MODERNA","center":[-77.02,-12.144],"poly":[[-77.028,-12.134],[-77.012,-12.134],[-77.012,-12.155],[-77.026,-12.155]]},{"id":"CHORRILLOS","name":"Chorrillos","zone":"LIMA SUR","center":[-77.008,-12.185],"poly":[[-77.032,-12.155],[-76.985,-12.162],[-76.975,-12.218],[-77.028,-12.212]]},{"id":"SAN JUAN DE MIRAFLORES","name":"S.J. Miraflores","zone":"LIMA SUR","center":[-76.965,-12.168],"poly":[[-76.985,-12.152],[-76.942,-12.152],[-76.945,-12.192],[-76.985,-12.192]]},{"id":"VILLA MARIA DEL TRIUNFO","name":"Villa María","zone":"LIMA SUR","center":[-76.932,-12.165],"poly":[[-76.954,-12.135],[-76.905,-12.14],[-76.912,-12.205],[-76.95,-12.195]]},{"id":"VILLA EL SALVADOR","name":"Villa El Salvador","zone":"LIMA SUR","center":[-76.945,-12.22],"poly":[[-76.978,-12.192],[-76.918,-12.198],[-76.905,-12.252],[-76.962,-12.255]]},{"id":"PACHACAMAC","name":"Pachacámac","zone":"LIMA SUR","center":[-76.875,-12.21],"poly":[[-76.915,-12.165],[-76.835,-12.175],[-76.845,-12.255],[-76.91,-12.248]]},{"id":"LURIN","name":"Lurín","zone":"LIMA SUR","center":[-76.875,-12.28],"poly":[[-76.945,-12.252],[-76.835,-12.255],[-76.825,-12.315],[-76.915,-12.315]]}],"informes":[{"nro":"Nº 032659","fechaHora":"04/11/2026 17:06","cliente":"Sodimac Perú","sede":"Almacén Logístico Lurín","direccion":"Km 38 Antigua Panamericana Sur, Lurín","distrito":"LURIN","distritoNombre":"Lurín","zone":"LIMA SUR","lat":-12.28,"lon":-76.875,"dniSup":"Ing. Roberto Solís (Supervisor de Turno)","supervisor":"Supervisor de Limpieza","turno":"MAÑANA","jefeGrupo":"Marcos Peña","operarios":15,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"SÍ: peroxi","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Falta reponer insumo peroxi","gps":"-12.0774213, -77.0653975","firmas":"Cliente: Firmado (piero alej) | Supervisor: Firmado (Pedro alej)","firmaClienteOk":true,"firmaSupOk":true,"esPrueba":false},{"nro":"Nº 055036","fechaHora":"04/11/2026 16:18","cliente":"Alicorp S.A.A.","sede":"Planta Central Argentina","direccion":"Av. Argentina 4793, Carmen de la Legua, Callao","distrito":"CARMEN DE LA LEGUA","distritoNombre":"Carmen de la Legua","zone":"CALLAO","lat":-12.046,"lon":-77.098,"dniSup":"Lic. Patricia Ramos (Jefa Operaciones)","supervisor":"Supervisor de Limpieza","turno":"MAÑANA","jefeGrupo":"No registrado","operarios":0,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Acta sin firma de cierre en sitio","gps":"-12.0774565, -77.0653642","firmas":"Cliente: No registrada | Supervisor: No registrada","firmaClienteOk":false,"firmaSupOk":false,"esPrueba":false},{"nro":"Nº 079601","fechaHora":"04/11/2026 18:08","cliente":"Alicorp S.A.A.","sede":"Planta Central Argentina","direccion":"Av. Argentina 4793, Carmen de la Legua, Callao","distrito":"CARMEN DE LA LEGUA","distritoNombre":"Carmen de la Legua","zone":"CALLAO","lat":-12.046,"lon":-77.098,"dniSup":"Supervisor Operaciones SSAYS","supervisor":"Prueba3","turno":"MAÑANA","jefeGrupo":"José Luis Quispe Mamani","operarios":8,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"REGULAR","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Requiere encerado/pulido de pisos fin de semana","gps":"Sin GPS","firmas":"Cliente: No registrada | Supervisor: No registrada","firmaClienteOk":false,"firmaSupOk":false,"esPrueba":true},{"nro":"Nº 079611","fechaHora":"04/11/2026 18:08","cliente":"Alicorp S.A.A.","sede":"Planta Central Argentina","direccion":"Av. Argentina 4793, Carmen de la Legua, Callao","distrito":"CARMEN DE LA LEGUA","distritoNombre":"Carmen de la Legua","zone":"CALLAO","lat":-12.046,"lon":-77.098,"dniSup":"Supervisor Operaciones SSAYS","supervisor":"Prueba1","turno":"MAÑANA","jefeGrupo":"José Luis Quispe Mamani","operarios":8,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"REGULAR","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Requiere encerado/pulido de pisos fin de semana","gps":"Sin GPS","firmas":"Cliente: No registrada | Supervisor: No registrada","firmaClienteOk":false,"firmaSupOk":false,"esPrueba":true},{"nro":"Nº 097316","fechaHora":"04/11/2026 18:09","cliente":"FINANCIERA CONFIANZA","sede":"AG. PUENTE HUACHIPA (AV. LAS TORRES)","direccion":"Av. Las Torres Mz. Lt. 06, Puente Huachipa","distrito":"LURIGANCHO-CHOSICA","distritoNombre":"Lurigancho / Huachipa","zone":"LIMA ESTE","lat":-12.008,"lon":-76.912,"dniSup":"Supervisor de Limpieza","supervisor":"Prueba3","turno":"MAÑANA","jefeGrupo":"José","operarios":10,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Todo conforme","gps":"Sin GPS","firmas":"Cliente: Firmado (piero1) | Supervisor: Firmado (piero2)","firmaClienteOk":true,"firmaSupOk":true,"esPrueba":true},{"nro":"Nº 097316-B","fechaHora":"04/11/2026 18:09","cliente":"FINANCIERA CONFIANZA","sede":"AG. PUENTE HUACHIPA (AV. LAS TORRES)","direccion":"Av. Las Torres Mz. Lt. 06, Puente Huachipa","distrito":"LURIGANCHO-CHOSICA","distritoNombre":"Lurigancho / Huachipa","zone":"LIMA ESTE","lat":-12.008,"lon":-76.912,"dniSup":"Supervisor de Limpieza","supervisor":"Prueba4","turno":"MAÑANA","jefeGrupo":"José","operarios":10,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Todo conforme","gps":"Sin GPS","firmas":"Cliente: Firmado (piero1) | Supervisor: Firmado (piero2)","firmaClienteOk":true,"firmaSupOk":true,"esPrueba":true},{"nro":"Nº 079610","fechaHora":"04/11/2026 18:09","cliente":"FINANCIERA CONFIANZA","sede":"AG. PUENTE HUACHIPA (AV. LAS TORRES)","direccion":"Av. Las Torres Mz. Lt. 06, Puente Huachipa","distrito":"LURIGANCHO-CHOSICA","distritoNombre":"Lurigancho / Huachipa","zone":"LIMA ESTE","lat":-12.008,"lon":-76.912,"dniSup":"Supervisor de Limpieza","supervisor":"Prueba1","turno":"MAÑANA","jefeGrupo":"José","operarios":10,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Todo conforme","gps":"Sin GPS","firmas":"Cliente: Firmado (piero1) | Supervisor: Firmado (piero2)","firmaClienteOk":true,"firmaSupOk":true,"esPrueba":true},{"nro":"Nº 079612","fechaHora":"04/11/2026 18:09","cliente":"FINANCIERA CONFIANZA","sede":"AG. PUENTE HUACHIPA (AV. LAS TORRES)","direccion":"Av. Las Torres Mz. Lt. 06, Puente Huachipa","distrito":"LURIGANCHO-CHOSICA","distritoNombre":"Lurigancho / Huachipa","zone":"LIMA ESTE","lat":-12.008,"lon":-76.912,"dniSup":"Supervisor de Limpieza","supervisor":"Prueba2","turno":"MAÑANA","jefeGrupo":"José","operarios":10,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Todo conforme","gps":"Sin GPS","firmas":"Cliente: Firmado (piero1) | Supervisor: Firmado (piero2)","firmaClienteOk":true,"firmaSupOk":true,"esPrueba":true},{"nro":"Nº 098879","fechaHora":"05/11/2026 17:01","cliente":"OMNILIFE","sede":"AV. ALFREDO MENDIOLA 1068","direccion":"Av. Alfredo Mendiola 1068, San Martín de Porres","distrito":"SAN MARTIN DE PORRES","distritoNombre":"San Martín de Porres","zone":"LIMA NORTE","lat":-12.015,"lon":-77.08,"dniSup":"Marcos","supervisor":"Prueba4","turno":"MAÑANA","jefeGrupo":"Marcos","operarios":5,"faltaPersonal":"NO","cantFalta":0,"cronograma":"CUMPLE","eval_oficinas":"BUENO","eval_pisos":"BUENO","eval_paredes":"BUENO","eval_lunas":"BUENO","eval_alfombra":"BUENO","eval_mobiliario":"BUENO","eval_otros":"BUENO","mat_faltantes":"NO","maquinaria":"BUENO","presentacion":"BUENO","ssoma_docs":"CUMPLE","ssoma_cap":"CUMPLE","ssoma_epps":"CUMPLE","reclamos":"Ninguno","obs":"Sin observaciones","gps":"Sin GPS","firmas":"Cliente: Firmado (ok) | Supervisor: Firmado (Marcos)","firmaClienteOk":true,"firmaSupOk":true,"esPrueba":true}],"asistencias":[{"id":"90b49e00-27fb-4435-9131-8c82cbed9fcf","fechaHora":"04/11/2026 16:19:27","fecha":"2026-11-04","hora":"16:19:27","supervisor":"72897360","local":"OFICINA PRINCIPAL - SSAYS","distrito":"PUEBLO LIBRE","distritoNombre":"Pueblo Libre","zone":"LIMA CENTRO","direccion":"General Manuel Vivanco 100, Pueblo Libre","lat":-12.076,"lon":-77.066,"difMetros":13.71,"status":"PRESENTE"},{"id":"8457917a-ffc4-4b33-9a17-8e7a348201a6","fechaHora":"04/11/2026 16:21:18","fecha":"2026-11-04","hora":"16:21:18","supervisor":"72897360","local":"OFICINA PRINCIPAL - SSAYS","distrito":"PUEBLO LIBRE","distritoNombre":"Pueblo Libre","zone":"LIMA CENTRO","direccion":"General Manuel Vivanco 100, Pueblo Libre","lat":-12.076,"lon":-77.066,"difMetros":9.09,"status":"PRESENTE"}],"carteraExtra":[{"cliente":"AC LOGISTICA","sede":"MEGA HUACHIPA","distrito":"SAN JUAN DE LURIGANCHO","distritoNombre":"S.J. Lurigancho","supervisor":"JOSUE RIECKHOF","lat":-11.982,"lon":-76.992},{"cliente":"AC LOGISTICA","sede":"LA MOLINA","distrito":"LA MOLINA","distritoNombre":"La Molina","supervisor":"JOSUE RIECKHOF","lat":-12.09,"lon":-76.932},{"cliente":"AC LOGISTICA","sede":"MEGA DUEÑAS","distrito":"CERCADO DE LIMA","distritoNombre":"Cercado de Lima","supervisor":"JOSUE RIECKHOF","lat":-12.05,"lon":-77.058},{"cliente":"AC LOGISTICA - LINDLEY","sede":"PLANTA RÍMAC","distrito":"RIMAC","distritoNombre":"Rímac","supervisor":"JOSUE RIECKHOF","lat":-12.024,"lon":-77.032},{"cliente":"ACOINSA","sede":"NÉSTOR GAMBETTA","distrito":"CALLAO","distritoNombre":"Callao","supervisor":"EDWIN TAMARA","lat":-11.995,"lon":-77.125},{"cliente":"ADM","sede":"SEDE SAN BORJA","distrito":"SAN BORJA","distritoNombre":"San Borja","supervisor":"MILAGROS RUBIO","lat":-12.096,"lon":-77.0},{"cliente":"AECSA","sede":"CONQUISTADORES","distrito":"SAN ISIDRO","distritoNombre":"San Isidro","supervisor":"VICTORIA NAVARRO","lat":-12.1,"lon":-77.038},{"cliente":"AECSA","sede":"SANTA CRUZ","distrito":"MIRAFLORES","distritoNombre":"Miraflores","supervisor":"VICTORIA NAVARRO","lat":-12.12,"lon":-77.032}],"totalSedesContrato":271};
+
+    let currentModule = 'inspecciones';
+
+    // =========================================================================
+    // FILTRO DE PERIODO COMPARTIDO (MANUAL + RELATIVO) PARA AMBOS PANELES
+    // =========================================================================
+    let periodStart = null; // 'YYYY-MM-DD' o null (sin límite inferior)
+    let periodEnd = null;   // 'YYYY-MM-DD' o null (sin límite superior)
+    let draftStart = null;
+    let draftEnd = null;
+    let periodMode = 'manual'; // 'manual' | 'relative'
+    let relativePreset = 'ALL'; // 'ALL' | 'TODAY' | '7D' | '30D' | 'THIS_MONTH' | 'LAST_MONTH'
+    let calYear = 2026;
+    let calMonth = 10; // 0-indexed: 10 = Noviembre 2026
+
+    function parseDateToISO(fechaHoraStr) {
+      const raw = String(fechaHoraStr || '').trim().split(' ')[0];
+      if (!raw) return '';
+      // Formato DD/MM/YYYY o D/M/YYYY
+      if (raw.includes('/')) {
+        const parts = raw.split('/');
+        if (parts.length === 3) {
+          const d = parts[0].padStart(2, '0');
+          const m = parts[1].padStart(2, '0');
+          const y = parts[2].length === 2 ? '20' + parts[2] : parts[2];
+          return `${y}-${m}-${d}`;
+        }
+      }
+      // Formato YYYY-MM-DD
+      if (raw.includes('-') && raw.length >= 10) {
+        return raw.slice(0, 10);
+      }
+      return '';
+    }
+
+    function formatISOShort(iso) {
+      if (!iso) return '';
+      const [y, m, d] = iso.split('-');
+      return `${d}/${m}/${y}`;
+    }
+
+    function getPeriodBadgeLabel() {
+      if (!periodStart && !periodEnd) return 'Todo el historial';
+      const s = periodStart || periodEnd;
+      const e = periodEnd || periodStart;
+      if (s === e) return formatISOShort(s);
+      return `${formatISOShort(s)} → ${formatISOShort(e)}`;
+    }
+
+    function updateGlobalPeriodHeaderUI() {
+      const btn = document.getElementById('globalPeriodBtn');
+      const lbl = document.getElementById('globalPeriodLabel');
+      const badge = document.getElementById('globalPeriodBadge');
+      if (!btn || !lbl || !badge) return;
+      const isFiltered = Boolean(periodStart || periodEnd);
+      btn.classList.toggle('filtered', isFiltered);
+      lbl.textContent = getPeriodBadgeLabel();
+      lbl.style.color = isFiltered ? '#6ee7b7' : '#f8fafc';
+      badge.textContent = isFiltered ? 'FILTRADO ▾' : 'TODOS ▾';
+    }
+
+    function togglePeriodPopover(ev) {
+      ev.stopPropagation();
+      const pop = document.getElementById('periodPopover');
+      const isOpen = pop.classList.contains('open');
+      if (isOpen) {
+        pop.classList.remove('open');
+        return;
+      }
+      draftStart = periodStart;
+      draftEnd = periodEnd;
+
+      const rect = ev.currentTarget.getBoundingClientRect();
+      pop.style.top = `${rect.bottom + 8}px`;
+      pop.style.left = `${Math.max(16, Math.min(window.innerWidth - 315, rect.left))}px`;
+
+      const allDates = [
+        ...DB.informes.map(r => parseDateToISO(r.fechaHora)),
+        ...DB.asistencias.map(a => parseDateToISO(a.fechaHora))
+      ].filter(Boolean).sort();
+
+      if (draftStart) {
+        const [y, m] = draftStart.split('-').map(Number);
+        calYear = y; calMonth = m - 1;
+      } else if (allDates.length > 0) {
+        const latest = allDates[allDates.length - 1];
+        const [y, m] = latest.split('-').map(Number);
+        calYear = y; calMonth = m - 1;
+      }
+
+      pop.classList.add('open');
+      renderPeriodPopoverBody();
+    }
+
+    function switchPeriodTab(mode) {
+      periodMode = mode;
+      document.getElementById('ppTabManual').classList.toggle('active', mode === 'manual');
+      document.getElementById('ppTabRelative').classList.toggle('active', mode === 'relative');
+      renderPeriodPopoverBody();
+    }
+
+    function shiftCalMonth(delta) {
+      calMonth += delta;
+      if (calMonth < 0) { calMonth = 11; calYear--; }
+      if (calMonth > 11) { calMonth = 0; calYear++; }
+      renderPeriodPopoverBody();
+    }
+
+    function onCalDayClick(isoDate) {
+      relativePreset = 'CUSTOM';
+      if (!draftStart || (draftStart && draftEnd)) {
+        draftStart = isoDate;
+        draftEnd = null;
+      } else {
+        if (isoDate < draftStart) {
+          draftEnd = draftStart;
+          draftStart = isoDate;
+        } else {
+          draftEnd = isoDate;
+        }
+      }
+      renderPeriodPopoverBody();
+    }
+
+    function onDirectDateInput(which, val) {
+      relativePreset = 'CUSTOM';
+      if (which === 'start') {
+        draftStart = val || null;
+        if (draftStart && draftEnd && draftEnd < draftStart) {
+          draftEnd = draftStart;
+        }
+        if (draftStart) {
+          const [y, m] = draftStart.split('-').map(Number);
+          calYear = y; calMonth = m - 1;
+        }
+      } else {
+        draftEnd = val || null;
+        if (draftStart && draftEnd && draftEnd < draftStart) {
+          draftStart = draftEnd;
+        }
+        if (draftEnd) {
+          const [y, m] = draftEnd.split('-').map(Number);
+          calYear = y; calMonth = m - 1;
+        }
+      }
+      renderPeriodPopoverBody();
+    }
+
+    function selectRelativePreset(code) {
+      relativePreset = code;
+      const now = new Date();
+      const toISO = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const todayISO = toISO(now);
+
+      if (code === 'ALL') {
+        draftStart = null; draftEnd = null;
+      } else if (code === 'TODAY') {
+        draftStart = todayISO; draftEnd = todayISO;
+      } else if (code === '7D') {
+        const d0 = new Date(now); d0.setDate(d0.getDate() - 6);
+        draftStart = toISO(d0); draftEnd = todayISO;
+      } else if (code === '30D') {
+        const d0 = new Date(now); d0.setDate(d0.getDate() - 29);
+        draftStart = toISO(d0); draftEnd = todayISO;
+      } else if (code === 'THIS_MONTH') {
+        const d0 = new Date(now.getFullYear(), now.getMonth(), 1);
+        const d1 = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        draftStart = toISO(d0); draftEnd = toISO(d1);
+      } else if (code === 'LAST_MONTH') {
+        const d0 = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const d1 = new Date(now.getFullYear(), now.getMonth(), 0);
+        draftStart = toISO(d0); draftEnd = toISO(d1);
+      }
+      renderPeriodPopoverBody();
+    }
+
+    function applyPeriodFilter() {
+      if (draftStart && draftEnd && draftEnd < draftStart) {
+        const tmp = draftStart; draftStart = draftEnd; draftEnd = tmp;
+      }
+      periodStart = draftStart;
+      periodEnd = draftEnd || draftStart;
+      document.getElementById('periodPopover').classList.remove('open');
+      renderAll();
+    }
+
+    function clearPeriodFilter() {
+      periodStart = null;
+      periodEnd = null;
+      draftStart = null;
+      draftEnd = null;
+      relativePreset = 'ALL';
+      document.getElementById('periodPopover').classList.remove('open');
+      renderAll();
+    }
+
+    function renderPeriodPopoverBody() {
+      const body = document.getElementById('ppBodyContent');
+      if (!body) return;
+
+      const sEff = draftStart;
+      const eEff = draftEnd || draftStart;
+
+      const rangeBoxesHtml = `
+        <div class="pp-range-inputs">
+          <div class="pp-range-box">
+            <label>Fecha Inicio</label>
+            <input type="date" value="${sEff || ''}" onchange="onDirectDateInput('start', this.value)">
+          </div>
+          <div class="pp-range-box">
+            <label>Fecha Final</label>
+            <input type="date" value="${eEff || ''}" onchange="onDirectDateInput('end', this.value)">
+          </div>
+        </div>
+      `;
+
+      if (periodMode === 'relative') {
+        const opts = [
+          { id: 'ALL', label: 'Todo el historial disponible', sub: 'Sin filtro' },
+          { id: 'TODAY', label: 'Hoy', sub: 'Día actual' },
+          { id: '7D', label: 'Últimos 7 días', sub: 'Semana móvil' },
+          { id: '30D', label: 'Últimos 30 días', sub: 'Mes móvil' },
+          { id: 'THIS_MONTH', label: 'Este mes', sub: 'Mes calendario' },
+          { id: 'LAST_MONTH', label: 'Mes anterior', sub: 'Mes previo' }
+        ];
+        body.innerHTML = `
+          ${rangeBoxesHtml}
+          <div class="rel-list">
+            ${opts.map(o => `
+              <button class="rel-opt ${relativePreset === o.id ? 'active' : ''}" onclick="selectRelativePreset('${o.id}')">
+                <span>${o.label}</span>
+                <span style="font-size:9.5px; opacity:0.75;">${o.sub}</span>
+              </button>
+            `).join('')}
+          </div>
+        `;
+        return;
+      }
+
+      const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+      const firstDay = new Date(calYear, calMonth, 1).getDay();
+      const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+      const prevMonthDays = new Date(calYear, calMonth, 0).getDate();
+
+      const activeDatesSet = new Set([
+        ...DB.informes.map(r => parseDateToISO(r.fechaHora)),
+        ...DB.asistencias.map(a => parseDateToISO(a.fechaHora))
+      ].filter(Boolean));
+
+      let cells = [];
+      for (let i = firstDay - 1; i >= 0; i--) {
+        cells.push({ day: prevMonthDays - i, iso: '', other: true });
+      }
+      for (let d = 1; d <= daysInMonth; d++) {
+        const iso = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        cells.push({ day: d, iso, other: false });
+      }
+      while (cells.length % 7 !== 0) {
+        cells.push({ day: cells.length % 7 + 1, iso: '', other: true });
+      }
+
+      body.innerHTML = `
+        ${rangeBoxesHtml}
+        <div class="cal-header">
+          <span>${monthNames[calMonth]} ${calYear}</span>
+          <div class="cal-nav">
+            <button onclick="shiftCalMonth(-1)" title="Mes anterior">↑</button>
+            <button onclick="shiftCalMonth(1)" title="Mes siguiente">↓</button>
+          </div>
+        </div>
+        <div class="cal-weekdays">
+          <span>Dom</span><span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span>
+        </div>
+        <div class="cal-grid">
+          ${cells.map(c => {
+            if (c.other) return `<div class="cal-day other-month">${c.day}</div>`;
+            let cls = 'cal-day';
+            if (activeDatesSet.has(c.iso)) cls += ' has-data';
+            if (sEff && c.iso === sEff) cls += ' range-start';
+            if (eEff && c.iso === eEff) cls += ' range-end';
+            if (sEff && eEff && c.iso > sEff && c.iso < eEff) cls += ' in-range';
+            return `<div class="${cls}" onclick="onCalDayClick('${c.iso}')">${c.day}</div>`;
+          }).join('')}
+        </div>
+        <div style="font-size:10px; color:#94a3b8; display:flex; justify-content:space-between; align-items:center;">
+          <span>${sEff ? `<b>${formatISOShort(sEff)}</b> → <b>${formatISOShort(eEff)}</b>` : 'Haz clic en inicio y fin'}</span>
+          <span style="color:#00bdf2;">● Con registros</span>
+        </div>
+      `;
+    }
+
+    // Cerrar popover si se hace clic fuera
+    document.addEventListener('click', e => {
+      const pop = document.getElementById('periodPopover');
+      if (pop && pop.classList.contains('open')) {
+        if (!pop.contains(e.target) && !e.target.closest('.global-period-pill')) {
+          pop.classList.remove('open');
+        }
+      }
+    });
+
+    let includeTests = true;
+    let showUnvisited = false; // Por defecto false para evitar desorden visual y resaltar DÓNDE hubo inspección
+    let selectedSede = 'ALL';
+    let selectedActaIdx = 0;
+    let tourIdx = 0;
+
+    // Proyección geográfica limpia y proporcionada de Lima y Callao
+    function geoToWorld(lon, lat) {
+      const cLon = -77.015;
+      const cLat = -12.065;
+      return {
+        x: (lon - cLon) * 165,
+        z: (cLat - lat) * 170
+      };
+    }
+
+    // =========================================================================
+    // 2. ESCENA 3D ESTÉTICA (ARQUITECTURA CARTOGRÁFICA DARK-SLATE + EMERALD)
+    // =========================================================================
+    let scene, camera, renderer, controls;
+    let districtObjs = {}; // distId -> { mesh, edge, labelEl, centerWorld, data, targetH, targetColor }
+    let pinObjs = {};      // key -> { group, stem, head, pulseRing, el, info, visible }
+    let raycaster = new THREE.Raycaster();
+    let mouse = new THREE.Vector2();
+
+    // Animación suave de cámara (Fly-To)
+    let camTargetPos = new THREE.Vector3(-4, 46, 54);
+    let camTargetLook = new THREE.Vector3(-2, 1, 3);
+    let isFlying = false;
+
+    function init3D() {
+      const container = document.getElementById('canvas3d');
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x060d14);
+      scene.fog = new THREE.FogExp2(0x060d14, 0.0072);
+
+      camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 450);
+      camera.position.copy(camTargetPos);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      container.appendChild(renderer.domElement);
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.065;
+      controls.maxPolarAngle = Math.PI / 2.15;
+      controls.minDistance = 12;
+      controls.maxDistance = 110;
+      controls.target.copy(camTargetLook);
+      controls.addEventListener('start', () => { isFlying = false; });
+
+      // Iluminación de estudio arquitectónico
+      scene.add(new THREE.HemisphereLight(0xe2e8f0, 0x09131e, 0.95));
+
+      const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+      sun.position.set(30, 65, 40);
+      scene.add(sun);
+
+      const rimCyan = new THREE.PointLight(0x00bdf2, 0.55, 120);
+      rimCyan.position.set(-30, 25, -20);
+      scene.add(rimCyan);
+
+      // Océano Pacífico minimalista con costa suave
+      const ocean = new THREE.Mesh(
+        new THREE.PlaneGeometry(75, 140),
+        new THREE.MeshStandardMaterial({ color: 0x040911, roughness: 0.85, metalness: 0.2 })
+      );
+      ocean.rotation.x = -Math.PI / 2;
+      ocean.position.set(-46, -0.1, 5);
+      scene.add(ocean);
+
+      // Línea de costa luminosa sutil
+      const coastPoints = [
+        [-77.162, -11.835], [-77.152, -11.925], [-77.152, -12.062],
+        [-77.110, -12.085], [-77.082, -12.098], [-77.045, -12.130],
+        [-77.026, -12.155], [-77.028, -12.212], [-76.945, -12.252], [-76.915, -12.315]
+      ].map(([lon, lat]) => {
+        const p = geoToWorld(lon, lat);
+        return new THREE.Vector3(p.x - 0.3, 0.05, p.z);
+      });
+      const coastCurve = new THREE.CatmullRomCurve3(coastPoints);
+      const coastGeo = new THREE.BufferGeometry().setFromPoints(coastCurve.getPoints(80));
+      scene.add(new THREE.Line(coastGeo, new THREE.LineBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.42 })));
+
+      // Ejes viales principales estilizados (Panamericana Norte/Sur y Javier Prado)
+      addRoadLine([[-77.076, -11.84], [-77.058, -12.03], [-76.985, -12.14], [-76.875, -12.30]], 0x38bdf8, 0.22);
+      addRoadLine([[-77.115, -12.05], [-77.038, -12.09], [-76.932, -12.08]], 0x10b981, 0.22);
+
+      // Grilla de fondo ultra-sutil
+      const grid = new THREE.GridHelper(120, 60, 0x111e2e, 0x0b1522);
+      grid.position.y = -0.08;
+      scene.add(grid);
+
+      buildDistrictPolygons();
+      buildLocationPins();
+
+      window.addEventListener('resize', onResize);
+      renderer.domElement.addEventListener('pointerdown', onMapClick);
+      animate();
+    }
+
+    function addRoadLine(coords, colorHex, opacity) {
+      const pts = coords.map(([lon, lat]) => {
+        const p = geoToWorld(lon, lat);
+        return new THREE.Vector3(p.x, 0.34, p.z);
+      });
+      const curve = new THREE.CatmullRomCurve3(pts);
+      const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(40));
+      scene.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity })));
+    }
+
+    function buildDistrictPolygons() {
+      const labelsLayer = document.getElementById('labelsLayer');
+
+      DB.districts.forEach(dist => {
+        const shape = new THREE.Shape();
+        dist.poly.forEach((pt, i) => {
+          const w = geoToWorld(pt[0], pt[1]);
+          if (i === 0) shape.moveTo(w.x, -w.z);
+          else shape.lineTo(w.x, -w.z);
+        });
+        shape.closePath();
+
+        const geo = new THREE.ExtrudeGeometry(shape, {
+          depth: 1,
+          bevelEnabled: true,
+          bevelThickness: 0.04,
+          bevelSize: 0.04,
+          bevelSegments: 2
+        });
+        geo.rotateX(-Math.PI / 2);
+
+        // Paleta arquitectónica uniforme y elegante (Slate oscuro para base, brillo solo en distritos activos)
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0x0f1c2b,
+          roughness: 0.72,
+          metalness: 0.18
+        });
+
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.scale.y = 0.28;
+        mesh.userData = { distId: dist.id };
+        scene.add(mesh);
+
+        const edges = new THREE.EdgesGeometry(geo);
+        const edge = new THREE.LineSegments(
+          edges,
+          new THREE.LineBasicMaterial({ color: 0x243b55, transparent: true, opacity: 0.7 })
+        );
+        edge.scale.y = 0.28;
+        scene.add(edge);
+
+        const labelEl = document.createElement('div');
+        labelEl.className = 'dist-name';
+        labelEl.textContent = dist.name;
+        labelsLayer.appendChild(labelEl);
+
+        const cWorld = geoToWorld(dist.center[0], dist.center[1]);
+        districtObjs[dist.id] = {
+          mesh,
+          edge,
+          labelEl,
+          centerWorld: cWorld,
+          data: dist,
+          targetH: 0.28,
+          targetColor: new THREE.Color(0x0f1c2b),
+          targetEdgeColor: new THREE.Color(0x243b55)
+        };
+      });
+    }
+
+    function buildLocationPins() {
+      const labelsLayer = document.getElementById('labelsLayer');
+
+      // Crear marcadores 3D para las sedes inspeccionadas, la Oficina Principal (Asistencias) y sedes extra
+      const allLocations = [];
+
+      // 1. Sedes únicas de INFORMES_DATA
+      const seen = new Set();
+      DB.informes.forEach(inf => {
+        if (!seen.has(inf.sede)) {
+          seen.add(inf.sede);
+          allLocations.push({
+            key: inf.sede,
+            cliente: inf.cliente,
+            sede: inf.sede,
+            distrito: inf.distrito,
+            distritoNombre: inf.distritoNombre,
+            lat: inf.lat,
+            lon: inf.lon,
+            kind: 'inspected'
+          });
+        }
+      });
+
+      // 2. Oficina Principal (Asistencias GPS)
+      if (!seen.has('OFICINA PRINCIPAL - SSAYS')) {
+        seen.add('OFICINA PRINCIPAL - SSAYS');
+        allLocations.push({
+          key: 'OFICINA PRINCIPAL - SSAYS',
+          cliente: 'SSAYS S.A.C.',
+          sede: 'OFICINA PRINCIPAL - SSAYS',
+          distrito: 'PUEBLO LIBRE',
+          distritoNombre: 'Pueblo Libre',
+          lat: -12.076,
+          lon: -77.066,
+          kind: 'hq'
+        });
+      }
+
+      // 3. Sedes adicionales de cartera (ocultas por defecto para no saturar)
+      DB.carteraExtra.forEach(c => {
+        if (!seen.has(c.sede)) {
+          seen.add(c.sede);
+          allLocations.push({
+            key: c.sede,
+            cliente: c.cliente,
+            sede: c.sede,
+            distrito: c.distrito,
+            distritoNombre: c.distritoNombre,
+            lat: c.lat,
+            lon: c.lon,
+            supervisor: c.supervisor,
+            kind: 'extra'
+          });
+        }
+      });
+
+      allLocations.forEach(loc => {
+        const pos = geoToWorld(loc.lon, loc.lat);
+        const group = new THREE.Group();
+        group.position.set(pos.x, 0.35, pos.z);
+
+        // Anillo radar en el piso del distrito
+        const pulseRing = new THREE.Mesh(
+          new THREE.RingGeometry(0.9, 1.35, 36),
+          new THREE.MeshBasicMaterial({ color: 0x00bdf2, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
+        );
+        pulseRing.rotation.x = -Math.PI / 2;
+        pulseRing.position.y = 0.04;
+        group.add(pulseRing);
+
+        // Aguja / Baliza 3D estilizada
+        const stem = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.14, 0.22, 1, 16),
+          new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x064e3b, roughness: 0.3 })
+        );
+        stem.position.y = 0.5;
+        stem.userData = { key: loc.key };
+        group.add(stem);
+
+        const head = new THREE.Mesh(
+          new THREE.SphereGeometry(0.45, 20, 20),
+          new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x059669, roughness: 0.2 })
+        );
+        head.position.y = 1.2;
+        head.userData = { key: loc.key };
+        group.add(head);
+
+        scene.add(group);
+
+        // Callout HTML elegante
+        const el = document.createElement('div');
+        el.className = 'pin-callout ok';
+        el.onclick = () => focusLocation(loc.key);
+        labelsLayer.appendChild(el);
+
+        pinObjs[loc.key] = {
+          group,
+          stem,
+          head,
+          pulseRing,
+          el,
+          info: loc,
+          targetH: 2.4
+        };
+      });
+    }
+
+    function updateSceneState(filteredInf) {
+      // 1. Resetear distritos a estado base limpio
+      Object.values(districtObjs).forEach(d => {
+        d.targetH = 0.28;
+        d.targetColor.setHex(0x0f1c2b);
+        d.targetEdgeColor.setHex(0x243b55);
+        d.labelEl.classList.remove('highlighted');
+      });
+
+      if (currentModule === 'inspecciones') {
+        const bySede = {};
+        const byDist = {};
+
+        filteredInf.forEach(r => {
+          if (!bySede[r.sede]) bySede[r.sede] = [];
+          bySede[r.sede].push(r);
+          if (!byDist[r.distrito]) byDist[r.distrito] = [];
+          byDist[r.distrito].push(r);
+        });
+
+        // Destacar en 3D los distritos donde se dio la inspección
+        Object.entries(byDist).forEach(([distId, list]) => {
+          const d = districtObjs[distId];
+          if (!d) return;
+          const hasWarn = list.some(x => x.eval_pisos === 'REGULAR' || x.mat_faltantes.startsWith('SÍ'));
+          d.targetH = 1.15;
+          d.targetColor.setHex(hasWarn ? 0x3b230b : 0x0b3b2c);
+          d.targetEdgeColor.setHex(hasWarn ? 0xf59e0b : 0x10b981);
+          d.labelEl.classList.add('highlighted');
+        });
+
+        // Actualizar pines
+        Object.entries(pinObjs).forEach(([key, p]) => {
+          const list = bySede[key] || [];
+          const isInspected = list.length > 0;
+          const isVisible = isInspected || (showUnvisited && p.info.kind !== 'hq');
+
+          p.group.visible = isVisible;
+          p.el.style.display = isVisible ? 'flex' : 'none';
+          if (!isVisible) return;
+
+          const isSel = selectedSede === key;
+
+          if (isInspected) {
+            const hasWarn = list.some(x => x.eval_pisos === 'REGULAR' || x.mat_faltantes.startsWith('SÍ'));
+            const noFirma = list.some(x => !x.firmaClienteOk);
+            const totalOps = list.reduce((a, b) => a + b.operarios, 0);
+
+            const hex = hasWarn ? 0xf59e0b : 0x10b981;
+            const em = hasWarn ? 0x78350f : 0x064e3b;
+            p.stem.material.color.setHex(hex);
+            p.stem.material.emissive.setHex(em);
+            p.head.material.color.setHex(hex);
+            p.head.material.emissive.setHex(hex);
+            p.pulseRing.material.color.setHex(hex);
+            p.targetH = 2.6 + list.length * 0.45;
+
+            const badgeTxt = hasWarn
+              ? (list.some(x => x.mat_faltantes.startsWith('SÍ')) ? 'Falta Insumo' : 'Piso Regular')
+              : (noFirma ? 'Sin Firma' : `${list.length} Acta${list.length>1?'s':''} OK`);
+
+            p.el.className = `pin-callout ${hasWarn ? 'warn' : 'ok'} ${isSel ? 'selected' : ''}`;
+            p.el.innerHTML = `
+              <div class="pin-card">
+                <div class="pin-top">
+                  <span class="pin-dist">📍 ${p.info.distritoNombre}</span>
+                  <span class="pin-pill ${hasWarn ? 'warn' : 'ok'}">${badgeTxt}</span>
+                </div>
+                <div class="pin-client">${list[0].cliente}</div>
+                <div class="pin-site">${p.info.sede} &bull; ${totalOps} op.</div>
+              </div>
+              <div class="pin-stem"></div>
+            `;
+          } else {
+            // Sede pendiente de visita (solo si showUnvisited == true)
+            p.stem.material.color.setHex(0x64748b);
+            p.head.material.color.setHex(0x64748b);
+            p.head.material.emissive.setHex(0x1e293b);
+            p.pulseRing.material.color.setHex(0x475569);
+            p.targetH = 1.4;
+
+            p.el.className = `pin-callout muted ${isSel ? 'selected' : ''}`;
+            p.el.innerHTML = `
+              <div class="pin-card">
+                <div class="pin-dist">${p.info.distritoNombre}</div>
+                <div class="pin-site">${p.info.sede}</div>
+              </div>
+              <div class="pin-stem" style="height:10px; opacity:0.4;"></div>
+            `;
+          }
+        });
+      } else {
+        // MODO ASISTENCIA & GEOCERCAS GPS
+        const pl = districtObjs['PUEBLO LIBRE'];
+        if (pl) {
+          pl.targetH = 1.25;
+          pl.targetColor.setHex(0x0a3247);
+          pl.targetEdgeColor.setHex(0x00bdf2);
+          pl.labelEl.classList.add('highlighted');
+        }
+
+        Object.entries(pinObjs).forEach(([key, p]) => {
+          const isHQ = key === 'OFICINA PRINCIPAL - SSAYS';
+          const isVisible = isHQ || showUnvisited;
+
+          p.group.visible = isVisible;
+          p.el.style.display = isVisible ? 'flex' : 'none';
+          if (!isVisible) return;
+
+          const isSel = selectedSede === key;
+
+          if (isHQ) {
+            p.stem.material.color.setHex(0x00bdf2);
+            p.head.material.color.setHex(0x00bdf2);
+            p.head.material.emissive.setHex(0x0284c7);
+            p.pulseRing.material.color.setHex(0x00bdf2);
+            p.targetH = 3.4;
+
+            p.el.className = `pin-callout gps ${isSel ? 'selected' : ''}`;
+            p.el.innerHTML = `
+              <div class="pin-card">
+                <div class="pin-top">
+                  <span class="pin-dist">📍 PUEBLO LIBRE</span>
+                  <span class="pin-pill gps">2 CHECK-INS OK</span>
+                </div>
+                <div class="pin-client">OFICINA PRINCIPAL - SSAYS</div>
+                <div class="pin-site">Precisión GPS: 9.1 m &ndash; 13.7 m</div>
+              </div>
+              <div class="pin-stem"></div>
+            `;
+          } else {
+            p.stem.material.color.setHex(0xf59e0b);
+            p.head.material.color.setHex(0xf59e0b);
+            p.head.material.emissive.setHex(0x78350f);
+            p.pulseRing.material.color.setHex(0xf59e0b);
+            p.targetH = 1.5;
+
+            p.el.className = `pin-callout muted ${isSel ? 'selected' : ''}`;
+            p.el.innerHTML = `
+              <div class="pin-card">
+                <div class="pin-dist" style="color:#fbbf24;">${p.info.distritoNombre} &bull; SIN GPS</div>
+                <div class="pin-site">${p.info.sede}</div>
+              </div>
+              <div class="pin-stem" style="height:10px; opacity:0.4;"></div>
+            `;
+          }
+        });
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      if (isFlying) {
+        camera.position.lerp(camTargetPos, 0.08);
+        controls.target.lerp(camTargetLook, 0.08);
+        if (camera.position.distanceTo(camTargetPos) < 0.15) {
+          isFlying = false;
+        }
+      }
+      controls.update();
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const tempV = new THREE.Vector3();
+      const t = performance.now() * 0.003;
+      const camDist = camera.position.distanceTo(controls.target);
+
+      // Animar distritos y etiquetas
+      Object.values(districtObjs).forEach(d => {
+        d.mesh.scale.y += (d.targetH - d.mesh.scale.y) * 0.12;
+        d.edge.scale.y = d.mesh.scale.y;
+        d.mesh.material.color.lerp(d.targetColor, 0.12);
+        d.edge.material.color.lerp(d.targetEdgeColor, 0.12);
+
+        const isActive = d.labelEl.classList.contains('highlighted');
+        // Mostrar nombres de distritos inactivos solo cuando se acerca la cámara para evitar ruido visual
+        if (!isActive && camDist > 62) {
+          d.labelEl.style.display = 'none';
+          return;
+        }
+
+        tempV.set(d.centerWorld.x, d.mesh.scale.y + 0.06, d.centerWorld.z);
+        tempV.project(camera);
+        if (tempV.z > 1) {
+          d.labelEl.style.display = 'none';
+        } else {
+          d.labelEl.style.display = 'block';
+          d.labelEl.style.left = `${(tempV.x * 0.5 + 0.5) * w}px`;
+          d.labelEl.style.top = `${(-(tempV.y * 0.5) + 0.5) * h}px`;
+        }
+      });
+
+      // Animar pines y proyectar callouts
+      Object.values(pinObjs).forEach(p => {
+        if (!p.group.visible) return;
+        const dObj = districtObjs[p.info.distrito];
+        const baseY = dObj ? dObj.mesh.scale.y : 0.28;
+        p.group.position.y = baseY + 0.03;
+
+        const curH = p.stem.scale.y;
+        const nextH = curH + (p.targetH - curH) * 0.15;
+        p.stem.scale.y = nextH;
+        p.stem.position.y = nextH / 2;
+        p.head.position.y = nextH + 0.35;
+
+        const pulse = 1 + Math.sin(t * 1.4) * 0.18;
+        p.pulseRing.scale.set(pulse, pulse, 1);
+
+        tempV.set(p.group.position.x, p.group.position.y + p.head.position.y + 0.35, p.group.position.z);
+        tempV.project(camera);
+        if (tempV.z > 1) {
+          p.el.style.display = 'none';
+        } else {
+          p.el.style.display = 'flex';
+          p.el.style.left = `${(tempV.x * 0.5 + 0.5) * w}px`;
+          p.el.style.top = `${(-(tempV.y * 0.5) + 0.5) * h}px`;
+        }
+      });
+
+      renderer.render(scene, camera);
+    }
+
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onMapClick(e) {
+      if (e.target !== renderer.domElement) return;
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+
+      const pinMeshes = [];
+      Object.values(pinObjs).forEach(p => {
+        if (p.group.visible) pinMeshes.push(p.head, p.stem);
+      });
+      const hits = raycaster.intersectObjects(pinMeshes);
+      if (hits.length > 0 && hits[0].object.userData.key) {
+        focusLocation(hits[0].object.userData.key);
+      }
+    }
+
+    function flyToPreset(preset) {
+      document.querySelectorAll('.bottom-dock .dock-btn').forEach(b => b.classList.remove('active'));
+      if (preset === 'all') {
+        document.getElementById('camAll').classList.add('active');
+        camTargetPos.set(-4, 46, 54);
+        camTargetLook.set(-2, 1, 3);
+        selectedSede = 'ALL';
+      } else if (preset === 'sur') {
+        document.getElementById('camSur').classList.add('active');
+        focusLocation('Almacén Logístico Lurín', true);
+        return;
+      } else if (preset === 'callao') {
+        document.getElementById('camCallao').classList.add('active');
+        focusLocation('Planta Central Argentina', true);
+        return;
+      } else if (preset === 'este') {
+        document.getElementById('camEste').classList.add('active');
+        focusLocation('AG. PUENTE HUACHIPA (AV. LAS TORRES)', true);
+        return;
+      } else if (preset === 'norte') {
+        document.getElementById('camNorte').classList.add('active');
+        focusLocation('AV. ALFREDO MENDIOLA 1068', true);
+        return;
+      } else if (preset === 'centro') {
+        document.getElementById('camCentro').classList.add('active');
+        focusLocation('OFICINA PRINCIPAL - SSAYS', true);
+        return;
+      }
+      isFlying = true;
+      renderAll();
+    }
+
+    function focusLocation(sedeKey, forceSelect = false) {
+      selectedSede = (!forceSelect && selectedSede === sedeKey) ? 'ALL' : sedeKey;
+      selectedActaIdx = 0;
+      const p = pinObjs[selectedSede];
+      if (p) {
+        camTargetLook.set(p.group.position.x, 1.5, p.group.position.z);
+        camTargetPos.set(p.group.position.x + 8, 17, p.group.position.z + 18);
+        isFlying = true;
+      } else {
+        camTargetPos.set(-4, 46, 54);
+        camTargetLook.set(-2, 1, 3);
+        isFlying = true;
+      }
+      renderAll();
+    }
+
+    // =========================================================================
+    // 3. INTERFAZ GERENCIAL (ENFOCADA EN DÓNDE SE DIO LA INSPECCIÓN)
+    // =========================================================================
+    function setModule(mod) {
+      currentModule = mod;
+      document.getElementById('btnModInsp').classList.toggle('active', mod === 'inspecciones');
+      document.getElementById('btnModAsist').classList.toggle('active', mod === 'asistencias');
+      selectedSede = 'ALL';
+      flyToPreset('all');
+    }
+
+    function isWithinPeriod(fechaHoraStr) {
+      if (!periodStart && !periodEnd) return true;
+      const iso = parseDateToISO(fechaHoraStr);
+      if (!iso) return true;
+      if (periodStart && iso < periodStart) return false;
+      const upper = periodEnd || periodStart;
+      if (upper && iso > upper) return false;
+      return true;
+    }
+
+    function getFilteredInformes() {
+      return DB.informes.filter(r => {
+        if (!includeTests && r.esPrueba) return false;
+        if (!isWithinPeriod(r.fechaHora)) return false;
+        return true;
+      });
+    }
+
+    function getFilteredAsistencias() {
+      return DB.asistencias.filter(a => isWithinPeriod(a.fechaHora));
+    }
+
+    function renderAll() {
+      updateGlobalPeriodHeaderUI();
+      const inf = getFilteredInformes();
+      if (currentModule === 'inspecciones') {
+        renderLeftInspecciones(inf);
+        renderRightInspecciones(inf);
+      } else {
+        renderLeftAsistencias();
+        renderRightAsistencias();
+      }
+      updateSceneState(inf);
+      renderModalTable(inf);
+    }
+
+    function renderLeftInspecciones(data) {
+      // Agrupar ubicaciones donde se dio la inspección
+      const locMap = {};
+      data.forEach(r => {
+        if (!locMap[r.sede]) {
+          locMap[r.sede] = {
+            sede: r.sede,
+            cliente: r.cliente,
+            distritoNombre: r.distritoNombre,
+            direccion: r.direccion,
+            zone: r.zone,
+            actas: [],
+            operarios: 0,
+            hasWarn: false
+          };
+        }
+        locMap[r.sede].actas.push(r);
+        locMap[r.sede].operarios += r.operarios;
+        if (r.eval_pisos === 'REGULAR' || r.mat_faltantes.startsWith('SÍ')) {
+          locMap[r.sede].hasWarn = true;
+        }
+      });
+
+      const locations = Object.values(locMap);
+      if (selectedSede !== 'ALL' && !locMap[selectedSede]) selectedSede = 'ALL';
+      const activeLoc = selectedSede !== 'ALL' ? locMap[selectedSede] : null;
+
+      let detailHtml = '';
+      if (activeLoc) {
+        if (selectedActaIdx >= activeLoc.actas.length) selectedActaIdx = 0;
+        const rec = activeLoc.actas[selectedActaIdx];
+        const selectorHtml = activeLoc.actas.length > 1
+          ? `<div style="margin-bottom:7px;">
+               <label style="font-size:9.5px; color:var(--text-muted); font-weight:700; display:block; margin-bottom:2px;">SELECCIONAR CONSTANCIA (${activeLoc.actas.length} EN ESTA SEDE):</label>
+               <select class="sync-input" style="padding:4px 7px; font-size:11px;" onchange="selectedActaIdx=parseInt(this.value); renderAll();">
+                 ${activeLoc.actas.map((a, idx) => `<option value="${idx}" ${idx===selectedActaIdx?'selected':''}>${a.nro} — ${a.fechaHora} (${a.supervisor})</option>`).join('')}
+               </select>
+             </div>`
+          : '';
+
+        detailHtml = `
+          <div class="hud-sec-title" style="margin-top:4px;">
+            <span>📄 Acta en ${activeLoc.distritoNombre}</span>
+            <span style="cursor:pointer; text-decoration:underline; font-size:9.5px;" onclick="focusLocation('ALL')">Ver Todas</span>
+          </div>
+          <div class="detail-card">
+            ${selectorHtml}
+            <div style="font-size:12.5px; font-weight:800; color:#fff;">${activeLoc.cliente}</div>
+            <div style="font-size:10.5px; color:var(--ssays-cyan); margin-bottom:6px;">${activeLoc.sede}</div>
+            <div class="kv-row"><span>Constancia</span><span style="color:var(--ssays-cyan);">${rec.nro} (${rec.fechaHora})</span></div>
+            <div class="kv-row"><span>Distrito / Sector</span><span>${activeLoc.distritoNombre} (${activeLoc.zone})</span></div>
+            <div class="kv-row"><span>Dirección Exacta</span><span>${activeLoc.direccion}</span></div>
+            <div class="kv-row"><span>Operarios Auditados</span><span>${rec.operarios} op. (Falta: ${rec.cantFalta || 0})</span></div>
+            <div class="kv-row"><span>Oficinas / Lunas / Pisos</span><span>${rec.eval_oficinas} / ${rec.eval_lunas} / ${rec.eval_pisos}</span></div>
+            <div class="kv-row"><span>Materiales Faltantes</span><span style="color:${rec.mat_faltantes.startsWith('SÍ')?'#fbbf24':'#34d399'};">${rec.mat_faltantes}</span></div>
+            <div class="kv-row"><span>Firmas de Cierre</span><span style="color:${rec.firmaClienteOk?'#34d399':'#f87171'};">${rec.firmaClienteOk?'Firmado Cliente + Sup.':'Sin Firma'}</span></div>
+            <div class="acta-actions">
+              <button class="btn-acta" style="background:rgba(15,23,42,0.9); border:1px solid rgba(56,189,248,0.55); color:#f8fafc;" onclick="openDriveInforme('${rec.nro.replace(/'/g, "\\'")}')">
+                <span style="display:inline-flex; align-items:center; gap:5px;">
+                  <svg width="13" height="12" viewBox="0 0 24 22" xmlns="http://www.w3.org/2000/svg">
+                    <polygon points="8,1 16,1 24,15 16,15" fill="#fbbc04"/>
+                    <polygon points="0,15 8,1 12,8 4,21" fill="#34a853"/>
+                    <polygon points="4,21 20,21 24,15 8,15" fill="#4285f4"/>
+                  </svg>
+                  VER INFORME EN DRIVE
+                </span>
+              </button>
+              <button class="btn-acta secondary" onclick="directDownloadPDFByNro('${rec.nro.replace(/'/g, "\\'")}')">📥 PDF FO-04</button>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:7px; padding-top:6px; border-top:1px dashed rgba(255,255,255,0.08); font-size:10.5px; line-height:1.35;">
+              <span style="color:${rec.pdfUrl ? '#e2e8f0' : '#94a3b8'};">
+                <strong>Estado del Informe en Drive:</strong> ${rec.pdfUrl ? `Sincronizado - ${rec.pdfFileName || 'CONSTANCIA_FO-04_' + (rec.cleanNro || rec.nro) + '.pdf'}` : 'Pendiente de enlace en columna AK (PDF_URL)'}
+              </span>
+              <span style="color:${rec.pdfUrl ? '#34d399' : '#fbbf24'}; font-weight:800; white-space:nowrap; cursor:pointer;" onclick="openActaModalByNro('${rec.nro.replace(/'/g, "\\'")}')">${rec.pdfUrl ? '✓ Vista Previa' : 'Vista Previa'}</span>
+            </div></div>
+          </div>
+        `;
+      }
+
+      document.getElementById('leftHud').innerHTML = `
+        <div class="hud-sec-title">
+          <span>📍 Dónde se dio la Inspección</span>
+          <span>${locations.length} DISTRITOS</span>
+        </div>
+
+        <label class="switch-pill" onclick="includeTests=!includeTests; renderAll();">
+          <span>🧪 Incluir actas piloto (Prueba1–4)</span>
+          <strong style="color:${includeTests ? '#34d399' : '#f87171'};">${includeTests ? 'SÍ (9 actas)' : 'SOLO REALES (2)'}</strong>
+        </label>
+
+        <label class="switch-pill" onclick="showUnvisited=!showUnvisited; renderAll();">
+          <span>🏢 Mostrar otras sedes cartera</span>
+          <strong style="color:${showUnvisited ? '#38bdf8' : '#94a3b8'};">${showUnvisited ? 'VISIBLES' : 'OCULTAS'}</strong>
+        </label>
+
+        <div class="loc-list">
+          ${locations.map(loc => `
+            <div class="loc-item ${selectedSede === loc.sede ? 'active' : ''}" onclick="focusLocation('${loc.sede}')">
+              <div class="loc-row1">
+                <span class="loc-dist-badge">📍 ${loc.distritoNombre} &bull; ${loc.zone}</span>
+                <span class="pin-pill ${loc.hasWarn ? 'warn' : 'ok'}">${loc.actas.length} insp.</span>
+              </div>
+              <div class="loc-title">${loc.cliente}</div>
+              <div class="loc-sub">${loc.sede} (${loc.operarios} op.)</div>
+            </div>
+          `).join('')}
+        </div>
+
+        ${detailHtml}
+      `;
+    }
+
+    function renderRightInspecciones(data) {
+      const total = data.length;
+      const calcPct = fn => total > 0 ? ((data.filter(fn).length / total) * 100) : 0;
+
+      const pctOficinas = calcPct(x => x.eval_oficinas === 'BUENO');
+      const pctLunas    = calcPct(x => x.eval_lunas === 'BUENO');
+      const pctPisos    = calcPct(x => x.eval_pisos === 'BUENO');
+      const pisosReg    = data.filter(x => x.eval_pisos === 'REGULAR').length;
+      const pctParedes  = calcPct(x => x.eval_paredes === 'BUENO');
+      const pctAlfombra = calcPct(x => x.eval_alfombra === 'BUENO');
+      const pctMob      = calcPct(x => x.eval_mobiliario === 'BUENO');
+      const pctSsoma    = calcPct(x => x.ssoma_docs === 'CUMPLE');
+      const sinFirmas   = data.filter(x => !x.firmaClienteOk).length;
+      const matFalt     = data.filter(x => x.mat_faltantes.startsWith('SÍ'));
+
+      const bars = [
+        { name: 'Oficinas', pct: pctOficinas, reg: 0 },
+        { name: 'Lunas y Mamparas', pct: pctLunas, reg: 0 },
+        { name: 'Paredes y Zócalos', pct: pctParedes, reg: 0 },
+        { name: 'Alfombras', pct: pctAlfombra, reg: 0 },
+        { name: 'Mobiliario', pct: pctMob, reg: 0 },
+        { name: 'SSOMA / Maquinaria', pct: pctSsoma, reg: 0 },
+        { name: 'Pisos (Encerado)', pct: pctPisos, reg: total > 0 ? (pisosReg/total*100) : 0 }
+      ];
+
+      document.getElementById('rightHud').innerHTML = `
+        <div class="hud-sec-title">
+          <span>📊 Resumen Gerencial (INFORMES_DATA)</span>
+          <span style="color:#34d399;">EN VIVO</span>
+        </div>
+
+        <div class="kpi-2x2">
+          <div class="kpi-box">
+            <div class="lbl">Inspecciones Hechas</div>
+            <div class="val">${total}</div>
+            <div class="sub">En ${new Set(data.map(x=>x.distrito)).size} distritos de Lima</div>
+          </div>
+          <div class="kpi-box green">
+            <div class="lbl">Oficinas = BUENO</div>
+            <div class="val">${pctOficinas.toFixed(0)}%</div>
+            <div class="sub">${data.filter(x=>x.eval_oficinas==='BUENO').length} de ${total} actas</div>
+          </div>
+          <div class="kpi-box green">
+            <div class="lbl">Lunas = BUENO</div>
+            <div class="val">${pctLunas.toFixed(0)}%</div>
+            <div class="sub">${data.filter(x=>x.eval_lunas==='BUENO').length} de ${total} actas</div>
+          </div>
+          <div class="kpi-box ${pisosReg > 0 ? 'amber' : 'green'}">
+            <div class="lbl">Pisos = BUENO</div>
+            <div class="val">${pctPisos.toFixed(1)}%</div>
+            <div class="sub">${pisosReg} REGULAR (C. Legua)</div>
+          </div>
+        </div>
+
+        <div class="hud-sec-title" style="margin-top:2px;">
+          <span>🏢 Evaluación por Área Inspeccionada</span>
+          <span>% BUENO</span>
+        </div>
+
+        <div class="detail-card">
+          ${bars.map(b => `
+            <div class="q-row">
+              <div class="q-head">
+                <span style="color:#e2e8f0;">${b.name}</span>
+                <span style="font-weight:800; color:${b.reg>0?'#fbbf24':'#34d399'};">${b.pct.toFixed(0)}%</span>
+              </div>
+              <div class="q-track">
+                <div class="q-ok" style="width:${b.pct}%;"></div>
+                <div class="q-warn" style="width:${b.reg}%;"></div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="hud-sec-title" style="margin-top:2px;">
+          <span>🚨 Alertas Situacionales</span>
+          <span style="color:#f59e0b;">ACCIÓN</span>
+        </div>
+
+        <div>
+          ${matFalt.length > 0 ? `
+            <div class="alert-box crit" style="cursor:pointer;" onclick="focusLocation('Almacén Logístico Lurín', true)">
+              <strong>⚠️ Lurín (Sodimac) — Falta Insumo "peroxi"</strong>
+              <span>Constancia ${matFalt[0].nro} (15 op.). Clic para ubicar en mapa.</span>
+            </div>
+          ` : ''}
+          ${pisosReg > 0 ? `
+            <div class="alert-box" style="cursor:pointer;" onclick="focusLocation('Planta Central Argentina', true)">
+              <strong>🧽 Carmen de la Legua (Alicorp) — Pisos REGULAR</strong>
+              <span>${pisosReg} actas requieren encerado/pulido fin de semana.</span>
+            </div>
+          ` : ''}
+          ${sinFirmas > 0 ? `
+            <div class="alert-box crit" style="cursor:pointer;" onclick="focusLocation('Planta Central Argentina', true)">
+              <strong>✍️ ${sinFirmas} Actas Sin Firma en Carmen de la Legua</strong>
+              <span>Cerrar firma digital de cliente y supervisor en Alicorp.</span>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    function renderLeftAsistencias() {
+      const list = getFilteredAsistencias();
+      document.getElementById('leftHud').innerHTML = `
+        <div class="hud-sec-title">
+          <span>📍 Ubicación Check-in GPS</span>
+          <span class="pin-pill gps">PUEBLO LIBRE</span>
+        </div>
+
+        <label class="switch-pill" onclick="showUnvisited=!showUnvisited; renderAll();">
+          <span>🗺️ Ver sedes zonales sin check-in</span>
+          <strong style="color:${showUnvisited ? '#fbbf24' : '#94a3b8'};">${showUnvisited ? 'VISIBLES' : 'OCULTAS'}</strong>
+        </label>
+
+        <div class="loc-list">
+          <div class="loc-item active" onclick="focusLocation('OFICINA PRINCIPAL - SSAYS', true)">
+            <div class="loc-row1">
+              <span class="loc-dist-badge">📍 PUEBLO LIBRE &bull; LIMA CENTRO</span>
+              <span class="pin-pill gps">PRESENTE</span>
+            </div>
+            <div class="loc-title">OFICINA PRINCIPAL - SSAYS</div>
+            <div class="loc-sub">Av. General Manuel Vivanco 100 &bull; 2 marcaciones</div>
+          </div>
+        </div>
+
+        <div class="hud-sec-title" style="margin-top:4px;">
+          <span>🧾 Bitácora de Marcaciones</span>
+        </div>
+
+        ${list.map((a, i) => `
+          <div class="detail-card" style="border-left:3px solid #00bdf2;">
+            <div style="display:flex; justify-content:space-between; font-size:11.5px; font-weight:800; color:#fff;">
+              <span>Marcación #${i + 1} &bull; ${a.hora}</span>
+              <span style="color:#34d399;">${a.status}</span>
+            </div>
+            <div style="font-size:10.5px; color:#cbd5e1; margin-top:4px;">
+              Supervisor DNI: <b>${a.supervisor}</b><br>
+              GPS: <code>${a.lat}, ${a.lon}</code><br>
+              Desviación geocerca: <b style="color:#00bdf2;">${a.difMetros.toFixed(2)} m</b>
+            </div>
+          </div>
+        `).join('')}
+      `;
+    }
+
+    function renderRightAsistencias() {
+      const list = getFilteredAsistencias();
+      const avgDif = list.reduce((a, b) => a + b.difMetros, 0) / Math.max(1, list.length);
+
+      document.getElementById('rightHud').innerHTML = `
+        <div class="hud-sec-title">
+          <span>🛰️ Control Geocercas GPS</span>
+          <span style="color:#00bdf2;">ACTIVO</span>
+        </div>
+
+        <div class="kpi-2x2">
+          <div class="kpi-box">
+            <div class="lbl">Check-ins Hoy</div>
+            <div class="val">${list.length}</div>
+            <div class="sub">100% en Pueblo Libre</div>
+          </div>
+          <div class="kpi-box green">
+            <div class="lbl">Precisión GPS</div>
+            <div class="val">${avgDif.toFixed(1)} m</div>
+            <div class="sub">Umbral geocerca &lt;50 m</div>
+          </div>
+          <div class="kpi-box amber">
+            <div class="lbl">Sedes en Maestro</div>
+            <div class="val">${DB.totalSedesContrato}</div>
+            <div class="sub">Registradas en bdatos</div>
+          </div>
+          <div class="kpi-box">
+            <div class="lbl">Supervisores Zonales</div>
+            <div class="val">4</div>
+            <div class="sub">Pendientes de check-in</div>
+          </div>
+        </div>
+
+        <div class="hud-sec-title" style="margin-top:2px;">
+          <span>🚨 Alertas de Cobertura GPS</span>
+        </div>
+
+        <div>
+          <div class="alert-box good">
+            <strong>✅ Pueblo Libre — Geocerca Validada</strong>
+            <span>Check-ins registrados a 9.09 m y 13.71 m del punto maestro.</span>
+          </div>
+          <div class="alert-box crit">
+            <strong>⚠️ Supervisores Zonales Sin Check-in en Campo</strong>
+            <span>Activar marcación GPS de Josue Rieckhof, Edwin Tamara, Milagros Rubio y Victoria Navarro en sus distritos asignados.</span>
+          </div>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // 4. TOUR GUIADO Y TABLA
+    // =========================================================================
+    const TOUR_STEPS = [
+      {
+        title: '1. Lurín (Lima Sur) — Sodimac Perú',
+        body: 'Ubicado en el Km 38 Antigua Panamericana Sur. Se auditó una dotación de <b>15 operarios</b> (Acta Nº 032659) con 100% en BUENO, pero con <b>alerta de insumo faltante ("peroxi")</b>.',
+        action: () => { setModule('inspecciones'); focusLocation('Almacén Logístico Lurín', true); }
+      },
+      {
+        title: '2. Carmen de la Legua (Callao) — Alicorp',
+        body: 'Planta Central Argentina (Av. Argentina 4793). Concentra <b>3 actas</b>: 2 reportan <b>Pisos en estado REGULAR</b> (requiere encerado) y las 3 figuran sin firma de cliente.',
+        action: () => { setModule('inspecciones'); focusLocation('Planta Central Argentina', true); }
+      },
+      {
+        title: '3. Lurigancho / Huachipa (Lima Este) — Financiera Confianza',
+        body: 'Agencia Puente Huachipa (Av. Las Torres). 4 actas piloto con 10 operarios auditados, 100% conforme en calidad, SSOMA y firmas.',
+        action: () => { setModule('inspecciones'); focusLocation('AG. PUENTE HUACHIPA (AV. LAS TORRES)', true); }
+      },
+      {
+        title: '4. Pueblo Libre (Lima Centro) — Control Asistencia GPS',
+        body: 'Oficina Principal SSAYS (Av. Manuel Vivanco 100). 2 marcaciones GPS validadas a <b>9.09 m</b> y <b>13.71 m</b> de precisión.',
+        action: () => { setModule('asistencias'); focusLocation('OFICINA PRINCIPAL - SSAYS', true); }
+      }
+    ];
+
+    function toggleTour() {
+      const el = document.getElementById('tourCard');
+      const open = !el.classList.contains('open');
+      el.classList.toggle('open', open);
+      if (open) { tourIdx = 0; applyTour(); }
+    }
+
+    function stepTour(d) {
+      tourIdx = (tourIdx + d + TOUR_STEPS.length) % TOUR_STEPS.length;
+      applyTour();
+    }
+
+    function applyTour() {
+      const s = TOUR_STEPS[tourIdx];
+      document.getElementById('tKicker').textContent = `UBICACIÓN SUPERVISIONADA • ${tourIdx + 1} / ${TOUR_STEPS.length}`;
+      document.getElementById('tTitle').textContent = s.title;
+      document.getElementById('tBody').innerHTML = s.body;
+      s.action();
+    }
+
+    function toggleModal() {
+      document.getElementById('matrixModal').classList.toggle('open');
+    }
+
+    function renderModalTable(infList) {
+      const wrap = document.getElementById('modalTable');
+      if (currentModule === 'inspecciones') {
+        document.getElementById('modalTitle').textContent = `Inspecciones por Distrito (${infList.length} registros)`;
+        wrap.innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>Constancia</th><th>Distrito</th><th>Cliente</th><th>Sede</th><th>Fecha</th>
+                <th>Op.</th><th>Oficinas</th><th>Lunas</th><th>Pisos</th><th>Mat. Faltante</th><th>Firmas</th><th>Archivo</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${infList.map(r => `
+                <tr>
+                  <td><b>${r.nro}</b></td>
+                  <td style="color:var(--ssays-cyan); font-weight:700;">${r.distritoNombre}</td>
+                  <td>${r.cliente}</td>
+                  <td>${r.sede}</td>
+                  <td>${r.fechaHora}</td>
+                  <td>${r.operarios}</td>
+                  <td style="color:#34d399;">${r.eval_oficinas}</td>
+                  <td style="color:#34d399;">${r.eval_lunas}</td>
+                  <td style="color:${r.eval_pisos==='REGULAR'?'#fbbf24':'#34d399'}; font-weight:700;">${r.eval_pisos}</td>
+                  <td style="color:${r.mat_faltantes.startsWith('SÍ')?'#fbbf24':'#94a3b8'};">${r.mat_faltantes}</td>
+                  <td style="color:${r.firmaClienteOk?'#34d399':'#f87171'};">${r.firmaClienteOk?'Firmado':'Sin Firma'}</td>
+                  <td>
+                    <button class="btn-tbl-dl" onclick="directDownloadPDFByNro('${r.nro.replace(/'/g, "\'")}')">📥 PDF FO-04</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } else {
+        const asistFilt = getFilteredAsistencias();
+        document.getElementById('modalTitle').textContent = `Asistencias GPS (${asistFilt.length} registros)`;
+        wrap.innerHTML = `
+          <table>
+            <thead>
+              <tr><th>Distrito</th><th>Sede</th><th>Fecha/Hora</th><th>Supervisor</th><th>Lat</th><th>Lon</th><th>Desviación</th><th>Estado</th></tr>
+            </thead>
+            <tbody>
+              ${asistFilt.map(a => `
+                <tr>
+                  <td style="color:var(--ssays-cyan); font-weight:700;">${a.distritoNombre}</td>
+                  <td>${a.local}</td>
+                  <td>${a.fechaHora}</td>
+                  <td><b>${a.supervisor}</b></td>
+                  <td>${a.lat}</td>
+                  <td>${a.lon}</td>
+                  <td style="color:#38bdf8; font-weight:800;">${a.difMetros.toFixed(2)} m</td>
+                  <td style="color:#34d399; font-weight:800;">${a.status}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+    }
+
+    function exportExcel() {
+      if (!window.XLSX) {
+        alert('No se cargó la librería XLSX para generar el archivo Excel.');
+        return;
+      }
+
+      const wb = XLSX.utils.book_new();
+      const periodoTxt = (typeof getPeriodBadgeLabel === 'function') ? getPeriodBadgeLabel() : 'Todo el historial';
+      const fechaGen = new Date().toLocaleString('es-PE');
+
+      if (currentModule === 'inspecciones') {
+        const rowsData = getFilteredInformes().map(r => ({
+          'Constancia': r.nro || '',
+          'Distrito': r.distritoNombre || '',
+          'Sector / Zona': r.zone || '',
+          'Cliente': r.cliente || '',
+          'Sede': r.sede || '',
+          'Dirección': r.direccion || '',
+          'Fecha y Hora': r.fechaHora || '',
+          'Supervisor': r.supervisor || '',
+          'DNI / Cargo': r.dniSup || '',
+          'Turno': r.turno || '',
+          'Jefe de Grupo': r.jefeGrupo || '',
+          'Operarios': r.operarios || 0,
+          'Falta Personal': r.faltaPersonal || 'NO',
+          'Cant. Falta': r.cantFalta || 0,
+          'Cronograma': r.cronograma || '',
+          'Oficinas': r.eval_oficinas || '',
+          'Lunas': r.eval_lunas || '',
+          'Pisos': r.eval_pisos || '',
+          'Paredes': r.eval_paredes || '',
+          'Alfombra': r.eval_alfombra || '',
+          'Mobiliario': r.eval_mobiliario || '',
+          'Materiales Faltantes': r.mat_faltantes || 'NO',
+          'SSOMA Docs': r.ssoma_docs || '',
+          'Firmas': r.firmas || '',
+          'Estado Firma': r.firmaClienteOk ? 'Firmado' : 'Sin Firma',
+          'Link PDF Drive': getDriveUrlForInforme(r) || 'Pendiente'
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(rowsData.length > 0 ? rowsData : [{ 'Mensaje': 'Sin registros en el periodo seleccionado' }]);
+        ws['!cols'] = [
+          { wch: 14 }, { wch: 20 }, { wch: 15 }, { wch: 28 }, { wch: 36 },
+          { wch: 36 }, { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 12 },
+          { wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 11 }, { wch: 14 },
+          { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+          { wch: 12 }, { wch: 22 }, { wch: 14 }, { wch: 34 }, { wch: 13 }, { wch: 45 }
+        ];
+
+        const resumenWs = XLSX.utils.aoa_to_sheet([
+          ['REPORTE EJECUTIVO DE INSPECCIONES - SSAYS S.A.C.'],
+          ['Periodo Filtrado:', periodoTxt],
+          ['Generado el:', fechaGen],
+          ['Total Actas Exportadas:', rowsData.length]
+        ]);
+        resumenWs['!cols'] = [{ wch: 26 }, { wch: 34 }];
+
+        XLSX.utils.book_append_sheet(wb, ws, 'Inspecciones');
+        XLSX.utils.book_append_sheet(wb, resumenWs, 'Resumen');
+        const stamp = new Date().toISOString().slice(0, 10);
+        XLSX.writeFile(wb, `Inspecciones_SSAYS_${stamp}.xlsx`);
+      } else {
+        const asistList = getFilteredAsistencias().map(a => ({
+          'Distrito': a.distritoNombre || '',
+          'Sector / Zona': a.zone || '',
+          'Sede / Local': a.local || '',
+          'Dirección': a.direccion || '',
+          'Fecha y Hora': a.fechaHora || '',
+          'Supervisor': a.supervisor || '',
+          'Latitud': a.lat || '',
+          'Longitud': a.lon || '',
+          'Desviación (m)': Number((a.difMetros || 0).toFixed(2)),
+          'Estado': a.status || ''
+        }));
+
+        const wsAsist = XLSX.utils.json_to_sheet(asistList.length > 0 ? asistList : [{ 'Mensaje': 'Sin marcaciones en el periodo seleccionado' }]);
+        wsAsist['!cols'] = [
+          { wch: 20 }, { wch: 15 }, { wch: 32 }, { wch: 34 }, { wch: 20 },
+          { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 14 }
+        ];
+
+        XLSX.utils.book_append_sheet(wb, wsAsist, 'Asistencias_GPS');
+        const stamp = new Date().toISOString().slice(0, 10);
+        XLSX.writeFile(wb, `Asistencias_GPS_SSAYS_${stamp}.xlsx`);
+      }
+    }
+
+    function exportCSV() {
+      let csv = 'Constancia,Distrito,Cliente,Sede,FechaHora,Operarios,Oficinas,Lunas,Pisos,MaterialesFaltantes,Firmas\n';
+      getFilteredInformes().forEach(r => {
+        csv += `"${r.nro}","${r.distritoNombre}","${r.cliente}","${r.sede}","${r.fechaHora}",${r.operarios},"${r.eval_oficinas}","${r.eval_lunas}","${r.eval_pisos}","${r.mat_faltantes}","${r.firmas}"\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'Inspecciones_Distritales_SSAYS.csv';
+      a.click();
+    }
+
+    function handleExcel(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+          if (wb.Sheets['INFORMES_DATA']) {
+            const raw = XLSX.utils.sheet_to_json(wb.Sheets['INFORMES_DATA']);
+            if (raw.length > 0) {
+              DB.informes = raw.map(r => {
+                const dir = String(r['DIRECCION'] || '').toUpperCase();
+                let distId = 'CERCADO DE LIMA';
+                if (dir.includes('LURIN') || dir.includes('LURÍN')) distId = 'LURIN';
+                else if (dir.includes('CARMEN DE LA LEGUA') || dir.includes('ARGENTINA')) distId = 'CARMEN DE LA LEGUA';
+                else if (dir.includes('HUACHIPA') || dir.includes('TORRES')) distId = 'LURIGANCHO-CHOSICA';
+                else if (dir.includes('MENDIOLA')) distId = 'SAN MARTIN DE PORRES';
+                const dObj = districtObjs[distId]?.data || { name: distId, center: [-77.05, -12.06], zone: 'LIMA CENTRO' };
+                const rawGps = String(r['GPS_LAT_LON'] || '');
+                const firmas = rawGps.includes('Firmado') || rawGps.includes('No registrada') ? rawGps : String(r['FIRMAS_REGISTRADAS'] || '');
+                return {
+                  nro: String(r['NRO_CONSTANCIA'] || ''),
+                  fechaHora: String(r['FECHA_HORA'] || ''),
+                  cliente: String(r['CLIENTE'] || ''),
+                  sede: String(r['LOCAL_SEDE'] || ''),
+                  direccion: String(r['DIRECCION'] || ''),
+                  distrito: distId,
+                  distritoNombre: dObj.name,
+                  zone: dObj.zone,
+                  lat: dObj.center[1],
+                  lon: dObj.center[0],
+                  supervisor: String(r['SUPERVISOR'] || ''),
+                  turno: String(r['TURNO'] || 'MAÑANA'),
+                  jefeGrupo: String(r['JEFE_GRUPO'] || ''),
+                  operarios: parseInt(r['OPERARIOS_SUPERVISION'] || 0) || 0,
+                  eval_oficinas: String(r['EVAL_OFICINAS'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                  eval_pisos: String(r['EVAL_PISOS'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                  eval_paredes: String(r['EVAL_PAREDES'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                  eval_lunas: String(r['EVAL_LUNAS'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                  eval_alfombra: String(r['EVAL_ALFOMBRA'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                  eval_mobiliario: String(r['EVAL_MOBILIARIO'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                  mat_faltantes: String(r['MATERIALES_FALTANTES'] || 'NO'),
+                  ssoma_docs: String(r['SSOMA_DOCUMENTOS'] || '').startsWith('CUMPLE') ? 'CUMPLE' : 'PENDIENTE',
+                  firmas: firmas,
+                  firmaClienteOk: firmas.includes('Cliente: Firmado'),
+                  esPrueba: String(r['SUPERVISOR'] || '').toLowerCase().includes('prueba')
+                };
+              });
+              renderAll();
+              alert('Mapa actualizado con los registros del Excel.');
+            }
+          }
+        } catch (err) { alert('Error: ' + err.message); }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+
+    // =========================================================================
+    // 5. MOTOR DE SINCRONIZACIÓN AUTOMÁTICA CON GOOGLE SHEETS (JSONP LIVE)
+    // =========================================================================
+    const DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1g3LzH-UwpB03-71HvubThG4S9fvJt-dk0nvResR5oZo/edit?usp=sharing";
+    let autoSyncTimer = null;
+    let maestroDistritosMap = {}; // sede_lower -> { distrito, lat, lon, supervisor }
+
+    function extractSheetId(url) {
+      const m = String(url || '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      return m ? m[1] : null;
+    }
+
+    function toggleSyncModal() {
+      document.getElementById('syncModal').classList.toggle('open');
+    }
+
+    function saveAndSyncNow() {
+      const url = document.getElementById('gsheetUrlInput').value.trim();
+      if (url) localStorage.setItem('ssays_gsheet_url', url);
+      restartAutoSync();
+      syncFromGoogleSheet(true);
+    }
+
+    function restartAutoSync() {
+      if (autoSyncTimer) clearInterval(autoSyncTimer);
+      const ms = parseInt(document.getElementById('syncIntervalSelect')?.value || '30000', 10);
+      if (ms > 0) {
+        autoSyncTimer = setInterval(() => syncFromGoogleSheet(false), ms);
+      }
+    }
+
+    // Fetch via Google Visualization JSONP (evita bloqueo CORS incluso abriendo el HTML localmente)
+    function fetchGvizTab(sheetId, tabName) {
+      return new Promise((resolve, reject) => {
+        const cbName = 'gvizCb_' + tabName.replace(/[^a-zA-Z0-9]/g, '') + '_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+        const script = document.createElement('script');
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Tiempo agotado al leer pestaña "${tabName}". Verifica que el Sheet tenga permiso "Cualquier persona con el enlace puede ver".`));
+        }, 9000);
+
+        function cleanup() {
+          clearTimeout(timeout);
+          delete window[cbName];
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[cbName] = function(resp) {
+          cleanup();
+          if (!resp || resp.status === 'error') {
+            reject(new Error(resp?.errors?.[0]?.detailed_message || `Error en pestaña ${tabName}`));
+            return;
+          }
+          const cols = (resp.table.cols || []).map(c => (c.label || c.id || '').trim());
+          const rows = (resp.table.rows || []).map(r => {
+            const obj = {};
+            (r.c || []).forEach((cell, idx) => {
+              const key = cols[idx] || `COL_${idx}`;
+              obj[key] = cell ? (cell.f !== undefined && cell.f !== null ? cell.f : cell.v) : '';
+            });
+            return obj;
+          });
+          resolve(rows);
+        };
+
+        const encodedTab = encodeURIComponent(tabName);
+        script.src = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json;responseHandler:${cbName}&sheet=${encodedTab}`;
+        script.onerror = () => {
+          cleanup();
+          reject(new Error(`No se pudo conectar con Google Sheets (${tabName}). Revisa tu conexión o permisos del enlace.`));
+        };
+        document.body.appendChild(script);
+      });
+    }
+
+    function normalizeDistritoId(rawDist, direccion, sede) {
+      const txt = `${rawDist || ''} ${direccion || ''} ${sede || ''}`.toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (txt.includes('LURIN')) return 'LURIN';
+      if (txt.includes('CARMEN DE LA LEGUA') || txt.includes('ARGENTINA')) return 'CARMEN DE LA LEGUA';
+      if (txt.includes('HUACHIPA') || txt.includes('LURIGANCHO') || txt.includes('CHOSICA') || txt.includes('TORRES')) return 'LURIGANCHO-CHOSICA';
+      if (txt.includes('SAN MARTIN DE PORRES') || txt.includes('MENDIOLA')) return 'SAN MARTIN DE PORRES';
+      if (txt.includes('PUEBLO LIBRE') || txt.includes('VIVANCO')) return 'PUEBLO LIBRE';
+      if (txt.includes('SAN JUAN DE LURIGANCHO')) return 'SAN JUAN DE LURIGANCHO';
+      if (txt.includes('LA MOLINA')) return 'LA MOLINA';
+      if (txt.includes('SAN ISIDRO') || txt.includes('CONQUISTADORES')) return 'SAN ISIDRO';
+      if (txt.includes('MIRAFLORES') || txt.includes('SANTA CRUZ')) return 'MIRAFLORES';
+      if (txt.includes('SAN BORJA') || txt.includes('UCELLO')) return 'SAN BORJA';
+      if (txt.includes('SURCO')) return 'SANTIAGO DE SURCO';
+      if (txt.includes('SAN MIGUEL')) return 'SAN MIGUEL';
+      if (txt.includes('RIMAC')) return 'RIMAC';
+      if (txt.includes('CALLAO') || txt.includes('GAMBETA')) return 'CALLAO';
+      if (txt.includes('ATE')) return 'ATE';
+      if (txt.includes('SANTA ANITA')) return 'SANTA ANITA';
+      if (txt.includes('VILLA EL SALVADOR')) return 'VILLA EL SALVADOR';
+      if (txt.includes('CHORRILLOS')) return 'CHORRILLOS';
+      if (txt.includes('LOS OLIVOS')) return 'LOS OLIVOS';
+      if (txt.includes('COMAS')) return 'COMAS';
+      if (txt.includes('INDEPENDENCIA')) return 'INDEPENDENCIA';
+      return 'CERCADO DE LIMA';
+    }
+
+    function ensurePinExists(loc) {
+      if (pinObjs[loc.key]) return;
+      const pos = geoToWorld(loc.lon, loc.lat);
+      const group = new THREE.Group();
+      group.position.set(pos.x, 0.35, pos.z);
+
+      const pulseRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.9, 1.35, 36),
+        new THREE.MeshBasicMaterial({ color: 0x00bdf2, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
+      );
+      pulseRing.rotation.x = -Math.PI / 2;
+      pulseRing.position.y = 0.04;
+      group.add(pulseRing);
+
+      const stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.14, 0.22, 1, 16),
+        new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x064e3b, roughness: 0.3 })
+      );
+      stem.position.y = 0.5;
+      stem.userData = { key: loc.key };
+      group.add(stem);
+
+      const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.45, 20, 20),
+        new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x059669, roughness: 0.2 })
+      );
+      head.position.y = 1.2;
+      head.userData = { key: loc.key };
+      group.add(head);
+
+      scene.add(group);
+
+      const el = document.createElement('div');
+      el.className = 'pin-callout ok';
+      el.onclick = () => focusLocation(loc.key);
+      document.getElementById('labelsLayer').appendChild(el);
+
+      pinObjs[loc.key] = { group, stem, head, pulseRing, el, info: loc, targetH: 2.4 };
+    }
+
+    async function syncFromGoogleSheet(isManual) {
+      const pill = document.getElementById('syncStatusPill');
+      const statusTxt = document.getElementById('syncStatusText');
+      const diagEl = document.getElementById('syncDiagMsg');
+      const url = document.getElementById('gsheetUrlInput')?.value.trim() || localStorage.getItem('ssays_gsheet_url') || DEFAULT_SHEET_URL;
+      const sheetId = extractSheetId(url);
+
+      if (!sheetId) {
+        pill.className = 'sync-pill offline';
+        statusTxt.textContent = 'URL Inválida';
+        if (diagEl) diagEl.innerHTML = '<span style="color:#f87171;">❌ El enlace no contiene un ID válido de Google Sheets.</span>';
+        return;
+      }
+
+      pill.className = 'sync-pill syncing';
+      statusTxt.textContent = 'Sincronizando...';
+
+      try {
+        // Leer en paralelo las 3 pestañas principales: bdatos, INFORMES_DATA, Asistencias
+        const [rawBdatos, rawInformes, rawAsist, rawInspSummary, rawEvidencias] = await Promise.all([
+          fetchGvizTab(sheetId, 'bdatos').catch(() => []),
+          fetchGvizTab(sheetId, 'INFORMES_DATA'),
+          fetchGvizTab(sheetId, 'Asistencias').catch(() => []),
+          fetchGvizTab(sheetId, 'Inspecciones').catch(() => []),
+          fetchGvizTab(sheetId, 'Evidencias').catch(() => [])
+        ]);
+
+        if (rawEvidencias && rawEvidencias.length > 0) {
+          DB.evidencias = rawEvidencias;
+        }
+
+        const pdfUrlByNro = {};
+        const pdfUrlBySede = {};
+        if (rawInspSummary && rawInspSummary.length > 0) {
+          rawInspSummary.forEach(row => {
+            const pUrl = String(row['pdfUrl'] || row['PDF_URL'] || '').trim();
+            const sName = String(row['sede'] || row['LOCAL_SEDE'] || '').trim().toLowerCase();
+            const nroKey = String(row['nro'] || row['NRO_CONSTANCIA'] || '').trim();
+            if (pUrl && sName) pdfUrlBySede[sName] = pUrl;
+            if (pUrl && nroKey) pdfUrlByNro[nroKey] = pUrl;
+          });
+        }
+        if (rawInformes && rawInformes.length > 0) {
+          rawInformes.forEach(r => {
+            const pUrl = String(r['PDF_URL'] || r['pdfUrl'] || r['COL_36'] || '').trim();
+            const nroKey = String(r['NRO_CONSTANCIA'] || '').trim();
+            const sName = String(r['LOCAL_SEDE'] || '').trim().toLowerCase();
+            if (pUrl && nroKey) pdfUrlByNro[nroKey] = pUrl;
+            if (pUrl && sName && !pdfUrlBySede[sName]) pdfUrlBySede[sName] = pUrl;
+          });
+        }
+
+        // 1. Indexar maestro bdatos (271 sedes) para cruce exacto de distrito y coordenadas
+        if (rawBdatos.length > 0) {
+          DB.totalSedesContrato = rawBdatos.length;
+          rawBdatos.forEach(b => {
+            const sedeName = String(b['local'] || b['LOCAL'] || b['DETALLE'] || '').trim();
+            const distRaw = String(b['DISTRITO'] || '').trim();
+            const coordStr = String(b['COORDENADAS'] || '');
+            let lat = null, lon = null;
+            if (coordStr.includes(',')) {
+              const parts = coordStr.split(',');
+              lat = parseFloat(parts[0]);
+              lon = parseFloat(parts[1]);
+            }
+            const distId = normalizeDistritoId(distRaw, b['DIRECCION'], sedeName);
+            const dObj = districtObjs[distId]?.data;
+            if (sedeName) {
+              maestroDistritosMap[sedeName.toLowerCase()] = {
+                distrito: distId,
+                distritoNombre: dObj ? dObj.name : (distRaw || distId),
+                zone: dObj ? dObj.zone : 'LIMA CENTRO',
+                lat: (!isNaN(lat) && lat) ? lat : (dObj ? dObj.center[1] : -12.06),
+                lon: (!isNaN(lon) && lon) ? lon : (dObj ? dObj.center[0] : -77.04),
+                supervisor: String(b['SUPERVISOR'] || 'TODOS')
+              };
+            }
+          });
+        }
+
+        // 2. Mapear INFORMES_DATA en vivo
+        if (rawInformes && rawInformes.length > 0) {
+          const mappedInf = rawInformes
+            .filter(r => String(r['NRO_CONSTANCIA'] || r['CLIENTE'] || '').trim() !== '')
+            .map(r => {
+              const sede = String(r['LOCAL_SEDE'] || '').trim();
+              const dir = String(r['DIRECCION'] || '').trim();
+              const sup = String(r['SUPERVISOR'] || '').trim();
+              const mInfo = maestroDistritosMap[sede.toLowerCase()];
+              const distId = mInfo ? mInfo.distrito : normalizeDistritoId('', dir, sede);
+              const dObj = districtObjs[distId]?.data || { name: distId, center: [-77.05, -12.06], zone: 'LIMA CENTRO' };
+
+              // Detectar si firmas quedó desplazado en GPS_LAT_LON
+              const rawGps = String(r['GPS_LAT_LON'] || '');
+              const rawFirmas = String(r['FIRMAS_REGISTRADAS'] || '');
+              const firmas = (rawGps.includes('Firmado') || rawGps.includes('No registrada')) ? rawGps : (rawFirmas || rawGps);
+
+              const ofi = String(r['EVAL_OFICINAS'] || 'BUENO');
+              const lun = String(r['EVAL_LUNAS'] || 'BUENO');
+              const pis = String(r['EVAL_PISOS'] || 'BUENO');
+              const par = String(r['EVAL_PAREDES'] || 'BUENO');
+              const alf = String(r['EVAL_ALFOMBRA'] || 'BUENO');
+              const mob = String(r['EVAL_MOBILIARIO'] || 'BUENO');
+              const otr = String(r['EVAL_OTROS'] || 'BUENO');
+
+              const item = {
+                nro: String(r['NRO_CONSTANCIA'] || ''),
+                fechaHora: String(r['FECHA_HORA'] || ''),
+                cliente: String(r['CLIENTE'] || ''),
+                sede: sede || 'Sede Sin Nombre',
+                direccion: dir,
+                distrito: distId,
+                distritoNombre: dObj.name,
+                zone: dObj.zone,
+                lat: dObj.center[1],
+                lon: dObj.center[0],
+                dniSup: String(r['DNI_SUPERVISOR'] || ''),
+                supervisor: sup,
+                turno: String(r['TURNO'] || 'MAÑANA'),
+                jefeGrupo: String(r['JEFE_GRUPO'] || ''),
+                operarios: parseInt(r['OPERARIOS_SUPERVISION'] || 0) || 0,
+                faltaPersonal: String(r['FALTA_PERSONAL'] || 'NO'),
+                cantFalta: parseInt(r['CANTIDAD_FALTA'] || 0) || 0,
+                cronograma: String(r['CRONOGRAMA_CUMPLE'] || 'CUMPLE').startsWith('CUMPLE') ? 'CUMPLE' : 'OBSERVADO',
+                eval_oficinas: ofi.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                eval_pisos: pis.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                eval_paredes: par.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                eval_lunas: lun.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                eval_alfombra: alf.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                eval_mobiliario: mob.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                eval_otros: otr.startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                mat_faltantes: String(r['MATERIALES_FALTANTES'] || 'NO'),
+                maquinaria: String(r['ESTADO_MAQUINARIA'] || '').includes('MALO') ? 'REGULAR' : 'BUENO',
+                presentacion: String(r['PRESENTACION_PERSONAL'] || '').startsWith('REGULAR') ? 'REGULAR' : 'BUENO',
+                ssoma_docs: String(r['SSOMA_DOCUMENTOS'] || '').startsWith('CUMPLE') ? 'CUMPLE' : 'PENDIENTE',
+                ssoma_cap: String(r['SSOMA_CAPACITACION'] || '').startsWith('CUMPLE') ? 'CUMPLE' : 'PENDIENTE',
+                ssoma_epps: String(r['SSOMA_EPPS'] || '').startsWith('CUMPLE') ? 'CUMPLE' : 'PENDIENTE',
+                reclamos: String(r['RECLAMOS_CLIENTE'] || 'Ninguno'),
+                obs: String(r['OBSERVACIONES_GENERALES'] || ''),
+                gps: rawGps.includes(',') ? rawGps : 'Sin GPS',
+                firmas: firmas,
+                firmaClienteOk: firmas.includes('Cliente: Firmado'),
+                firmaSupOk: firmas.includes('Supervisor: Firmado'),
+                esPrueba: sup.toLowerCase().includes('prueba'),
+                pdfUrl: (function() {
+                  return String(r['PDF_URL'] || r['pdfUrl'] || r['COL_36'] || '').trim() || pdfUrlByNro[String(r['NRO_CONSTANCIA'] || '').trim()] || pdfUrlBySede[sede.toLowerCase()] || '';
+                })(),
+                pdfFileName: (function() {
+                  const rawLink = String(r['PDF_URL'] || r['pdfUrl'] || r['COL_36'] || '').trim() || pdfUrlByNro[String(r['NRO_CONSTANCIA'] || '').trim()] || pdfUrlBySede[sede.toLowerCase()] || '';
+                  if (!rawLink) return '';
+                  const cNro = String(r['NRO_CONSTANCIA'] || '').replace(/^N[°º]\s*/i, '').trim();
+                  return `CONSTANCIA_FO-04_${cNro || 'INFORME'}.pdf`;
+                })(),
+                cleanNro: String(r['NRO_CONSTANCIA'] || '').replace(/^N[°º]\s*/i, '').trim()
+              };
+
+              ensurePinExists({
+                key: item.sede,
+                cliente: item.cliente,
+                sede: item.sede,
+                distrito: item.distrito,
+                distritoNombre: item.distritoNombre,
+                lat: item.lat,
+                lon: item.lon,
+                kind: 'inspected'
+              });
+
+              return item;
+            });
+
+          if (mappedInf.length > 0) {
+            DB.informes = mappedInf;
+          }
+        }
+
+        // 3. Mapear Asistencias en vivo
+        if (rawAsist && rawAsist.length > 0) {
+          const mappedAsist = rawAsist
+            .filter(a => String(a['idAsistencia'] || a['supervisor'] || '').trim() !== '')
+            .map(a => {
+              const local = String(a['local'] || 'OFICINA PRINCIPAL - SSAYS').trim();
+              const dir = String(a['latitudGPS'] || ''); // Por corrimiento de encabezado en Sheet
+              const lat = parseFloat(a['longitudGPS']) || -12.076;
+              const lon = parseFloat(a['distanciaMetros']) || -77.066;
+              const dif = parseFloat(String(a['dif'] || '0').replace('m', '')) || 0;
+              const distId = normalizeDistritoId('', dir, local);
+              const dObj = districtObjs[distId]?.data || { name: 'Pueblo Libre', zone: 'LIMA CENTRO', center: [-77.066, -12.076] };
+              const fHora = String(a['fechaHora'] || '');
+
+              ensurePinExists({
+                key: local,
+                cliente: 'SSAYS S.A.C.',
+                sede: local,
+                distrito: distId,
+                distritoNombre: dObj.name,
+                lat: dObj.center[1],
+                lon: dObj.center[0],
+                kind: 'hq'
+              });
+
+              return {
+                id: String(a['idAsistencia'] || ''),
+                fechaHora: fHora,
+                fecha: fHora.split(' ')[0] || '',
+                hora: fHora.split(' ')[1] || '',
+                supervisor: String(a['supervisor'] || ''),
+                local: local,
+                distrito: distId,
+                distritoNombre: dObj.name,
+                zone: dObj.zone,
+                direccion: dir,
+                lat: lat,
+                lon: lon,
+                difMetros: dif,
+                status: String(a['status'] || 'PRESENTE')
+              };
+            });
+
+          if (mappedAsist.length > 0) {
+            DB.asistencias = mappedAsist;
+          }
+        }
+
+        renderAll();
+        const nowStr = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        pill.className = 'sync-pill';
+        statusTxt.textContent = `EN VIVO • ${nowStr}`;
+        if (diagEl) {
+          diagEl.innerHTML = `<span style="color:#34d399;">✅ Sincronizado (${nowStr}):</span> <b>${DB.informes.length}</b> actas en <code>INFORMES_DATA</code>, <b>${DB.asistencias.length}</b> check-ins en <code>Asistencias</code> y <b>${DB.totalSedesContrato}</b> sedes en <code>bdatos</code>.`;
+        }
+      } catch (err) {
+        console.warn('Sync fallback to cached data:', err);
+        pill.className = 'sync-pill offline';
+        statusTxt.textContent = 'Modo Caché (Ver Permisos)';
+        if (diagEl) {
+          diagEl.innerHTML = `<span style="color:#fbbf24;">⚠️ ${err.message}</span><br><span style="color:#94a3b8;">Asegúrate de que el Google Sheet esté compartido como <b>"Cualquier persona con el enlace: Lector"</b>. Mientras tanto se muestran los datos sincronizados previamente.</span>`;
+        }
+      }
+    }
+
+
+    // =========================================================================
+    // 6. GENERADOR EXACTO FORMATO OFICIAL SSAYS FO-04 (VERSIÓN 04 - 2 PÁGINAS)
+    // =========================================================================
+    let currentActaRecord = null;
+
+    function parseInstalacionCell(rawVal, fallbackObs) {
+      const txt = String(rawVal || '').trim();
+      let grade = 'BUENO';
+      let obs = fallbackObs || '';
+      if (txt.toUpperCase().startsWith('DEFICIENTE')) {
+        grade = 'DEFICIENTE';
+        obs = txt.replace(/^DEFICIENTE\s*[:\-]?\s*/i, '') || obs;
+      } else if (txt.toUpperCase().startsWith('REGULAR')) {
+        grade = 'REGULAR';
+        obs = txt.replace(/^REGULAR\s*[:\-]?\s*/i, '') || obs;
+      } else if (txt.toUpperCase().startsWith('BUENO')) {
+        grade = 'BUENO';
+        obs = txt.replace(/^BUENO\s*[:\-]?\s*/i, '') || obs;
+      } else if (txt === 'N/A' || txt === '') {
+        grade = 'BUENO';
+      }
+      return { grade, obs };
+    }
+
+    function parseSsomaCell(rawVal, fallbackObs) {
+      const txt = String(rawVal || '').trim();
+      let ok = true;
+      let obs = fallbackObs || '';
+      if (txt.toUpperCase().startsWith('NO CUMPLE') || txt.toUpperCase() === 'NO') {
+        ok = false;
+        obs = txt.replace(/^NO\s*CUMPLE\s*[:\-]?\s*/i, '') || obs;
+      } else if (txt.toUpperCase().startsWith('CUMPLE')) {
+        ok = true;
+        obs = txt.replace(/^CUMPLE\s*[:\-]?\s*/i, '') || obs;
+      }
+      return { ok, obs };
+    }
+
+    function enrichRecordForFO04(rec) {
+      const cleanNro = String(rec.nro || '').replace(/^N[°º]\s*/i, '').trim() || '000000';
+      const turnoUp = String(rec.turno || 'MAÑANA').toUpperCase();
+      const faltaSi = String(rec.faltaPersonal || 'NO').toUpperCase().startsWith('S');
+      const cronoCumple = !String(rec.cronograma || 'CUMPLE').toUpperCase().includes('NO');
+
+      const sshh = parseInstalacionCell(rec.eval_sshh, rec.eval_sshh_obs || 'Abastecidos con insumos y desinfectados');
+      const ofi  = parseInstalacionCell(rec.eval_oficinas_obs || rec.eval_oficinas, 'Escritorios y papeleras limpias');
+      const pis  = parseInstalacionCell(rec.eval_pisos === 'REGULAR' ? 'REGULAR: ' + (rec.eval_pisos_obs || 'Requiere encerado programado para el fin de semana') : (rec.eval_pisos_obs || rec.eval_pisos), 'Pisos limpios y desinfectados');
+      const par  = parseInstalacionCell(rec.eval_paredes_obs || rec.eval_paredes, 'Sin manchas aparentes');
+      const lun  = parseInstalacionCell(rec.eval_lunas_obs || rec.eval_lunas, 'Mamparas y vidrios transparentes limpios');
+      const alf  = parseInstalacionCell(rec.eval_alfombra_obs || rec.eval_alfombra, 'Aspirado completo en zona');
+      const mob  = parseInstalacionCell(rec.eval_mobiliario_obs || rec.eval_mobiliario, 'Sillas y mesas en orden');
+      const otr  = parseInstalacionCell(rec.eval_otros_obs || rec.eval_otros, 'Zona de comedor higienizada');
+
+      const matFaltStr = String(rec.mat_faltantes || 'NO');
+      const matFaltSi = matFaltStr.toUpperCase().startsWith('S');
+      const matFaltDet = matFaltSi ? matFaltStr.replace(/^S[ÍI]\s*[:\-]?\s*/i, '') : 'Stock completo de bolsas y desinfectantes';
+
+      const matSobStr = String(rec.mat_sobrantes || 'NO');
+      const matSobSi = matSobStr.toUpperCase().startsWith('S');
+      const matSobDet = matSobSi ? matSobStr.replace(/^S[ÍI]\s*[:\-]?\s*/i, '') : '';
+
+      const presGrade = String(rec.presentacion || 'BUENO').toUpperCase().startsWith('DEF') ? 'DEFICIENTE'
+        : (String(rec.presentacion || 'BUENO').toUpperCase().startsWith('REG') ? 'REGULAR' : 'BUENO');
+
+      const s1 = parseSsomaCell(rec.ssoma_docs, 'IPERC y Política SSOMA visible');
+      const s2 = parseSsomaCell(rec.ssoma_insp, 'Inspección semanal realizada en campo');
+      const s3 = parseSsomaCell(rec.ssoma_msds, 'Hojas MSDS ubicadas en casillero/almacén');
+      const s4 = parseSsomaCell(rec.ssoma_cap, 'Charla de 5 minutos sobre ergonomía y riesgos');
+      const s5 = parseSsomaCell(rec.ssoma_epps, 'Uso de guantes de nitrilo, botas y uniforme');
+
+      // Extract signature names if present in `Firmado (nombre)`
+      let firmaCli = 'Pendiente de firma';
+      let firmaSup = rec.dniSup || rec.supervisor || 'Supervisor SSAYS';
+      const fStr = String(rec.firmas || '');
+      const mCli = fStr.match(/Cliente:\s*Firmado\s*\(([^)]+)\)/i);
+      if (mCli) firmaCli = mCli[1];
+      else if (fStr.includes('Cliente: Firmado')) firmaCli = 'Firmado Digitalmente';
+
+      const mSup = fStr.match(/Supervisor:\s*Firmado\s*\(([^)]+)\)/i);
+      if (mSup) firmaSup = mSup[1];
+
+      return {
+        cleanNro,
+        cliente: rec.cliente || '',
+        sede: rec.sede || '',
+        direccion: rec.direccion || '',
+        supervisorCargo: rec.dniSup || rec.supervisor || 'Supervisor Operaciones SSAYS',
+        dniSupervisor: /^\d{8}$/.test(String(rec.dniSup || '').trim()) ? String(rec.dniSup).trim() : '',
+        fechaHora: rec.fechaHora || '',
+        fechaSolo: String(rec.fechaHora || '').split(' ')[0] || '23/11/2026',
+        personalDestacado: 'Operarios de Mantenimiento y Limpieza SSAYS',
+        operarios: rec.operarios || 0,
+        jefeGrupo: rec.jefeGrupo || 'No asignado',
+        turnoUp,
+        faltaSi,
+        cantFalta: rec.cantFalta || 0,
+        cronoCumple,
+        cronoDetalle: rec.cronogramaDetalle || 'Se ejecutan las actividades de rutina según cronograma mensual',
+        rows3: [
+          { name: 'SS.HH', ...sshh },
+          { name: 'OFICINAS', ...ofi },
+          { name: 'PISOS', ...pis },
+          { name: 'PAREDES', ...par },
+          { name: 'LUNAS', ...lun },
+          { name: 'ALFOMBRA', ...alf },
+          { name: 'MOBILIARIO', ...mob },
+          { name: 'OTROS', ...otr }
+        ],
+        matFaltSi,
+        matFaltDet,
+        matSobSi,
+        matSobDet,
+        maquinariaDet: rec.maquinaria_det || 'Manubrio: BUENO | Ruedas: BUENO | Tapa: BUENO | Cable: BUENO | Enchufe: BUENO',
+        aspiradoras: rec.aspiradoras || 'ASP-2024-04',
+        lustradoras: rec.lustradoras || 'LUST-2023-11',
+        maqObs: 'Equipos operativos y limpios',
+        presGrade,
+        presDet: rec.presentacion_obs || 'Personal con uniforme completo, fotocheck y cabello recogido',
+        ssomaRows: [
+          { q: '1. Documentos exhibidos en espacio asignado (Política, RISST, IPERC)', ...s1 },
+          { q: '2. Inspecciones periódicas SSOMA (EPPs, herramientas, MATPEL)', ...s2 },
+          { q: '3. Hojas de seguridad (MSDS) de productos químicos utilizados', ...s3 },
+          { q: '4. Personal capacitado según programa SSOMA y registros al día', ...s4 },
+          { q: '5. Personal cuenta y utiliza correctamente los EPPs para su labor', ...s5 }
+        ],
+        reclamos: rec.reclamos || 'Ninguno manifestado durante la supervisión',
+        obsComp: rec.obs || 'Sin observaciones adicionales',
+        firmaCli,
+        firmaSup,
+        gps: (rec.gps && rec.gps !== 'Sin GPS') ? rec.gps : `${rec.lat || -12.04680}, ${rec.lon || -77.10890}`
+      };
+    }
+
+    function buildActaHTMLDocument(rec) {
+      const d = enrichRecordForFO04(rec);
+      const chk = cond => cond ? '[ X ]' : '[ &nbsp; ]';
+
+      return `
+        <!-- PÁGINA 1 DE 2: FORMATO FO-04 VERSIÓN 04 -->
+        <div class="fo04-page">
+          <div>
+            <!-- ENCABEZADO OFICIAL FO-04 -->
+            <table class="fo04-tbl" style="margin-bottom:0;">
+              <tr>
+                <td style="width:22%; text-align:center; padding:6px;">
+                  <div style="display:inline-flex; align-items:center; gap:5px;">
+                    <svg width="24" height="22" viewBox="0 0 24 22">
+                      <rect x="0" y="1" width="22" height="5" rx="1.5" fill="#0284c7"/>
+                      <rect x="0" y="8.5" width="17" height="5" rx="1.5" fill="#0284c7"/>
+                      <rect x="0" y="16" width="22" height="5" rx="1.5" fill="#0284c7"/>
+                    </svg>
+                    <span style="font-weight:900; font-size:20px; color:#006837; letter-spacing:1px;">SSAYS</span>
+                  </div>
+                </td>
+                <td style="width:54%; text-align:center; font-weight:800; font-size:12px; color:#0f172a;">
+                  CONSTANCIA DE SUPERVISION OPERACIONES DE LIMPIEZA
+                </td>
+                <td style="width:24%; padding:0;">
+                  <div style="border-bottom:1px solid #444; padding:3px 6px; text-align:center; font-weight:800; font-size:10px;">FO-04</div>
+                  <div style="border-bottom:1px solid #444; padding:3px 6px; text-align:center; font-size:9px;">VERSION: 04</div>
+                  <div style="padding:3px 6px; text-align:center; font-weight:800; font-size:10px; color:#0f172a;">N° ${d.cleanNro}</div>
+                </td>
+              </tr>
+            </table>
+
+            <!-- DATOS GENERALES -->
+            <table class="fo04-tbl" style="margin-top:-1px; margin-bottom:5px;">
+              <tr>
+                <td style="width:54%;"><strong>CLIENTE:</strong> ${d.cliente}</td>
+                <td style="width:46%;"><strong>LOCAL / SEDE:</strong> ${d.sede}</td>
+              </tr>
+              <tr>
+                <td colspan="2"><strong>DIRECCION:</strong> ${d.direccion}</td>
+              </tr>
+              <tr>
+                <td><strong>SUPERVISOR DE OPERACIONES A CARGO:</strong> ${d.supervisorCargo}</td>
+                <td><strong>DNI SUPERVISOR:</strong> ${d.dniSupervisor}</td>
+              </tr>
+              <tr>
+                <td colspan="2"><strong>FECHA / HORA:</strong> ${d.fechaHora}</td>
+              </tr>
+            </table>
+
+            <!-- 1. VERIFICACION -->
+            <div class="fo04-box">
+              <div class="fo04-sec-bar">1. VERIFICACION:</div>
+              <table class="fo04-tbl" style="border:none;">
+                <tr>
+                  <td style="border-left:none; border-top:none; width:64%;"><strong>PERSONAL DESTACADO:</strong> ${d.personalDestacado}</td>
+                  <td style="border-right:none; border-top:none; width:36%;"><strong>N° OPERARIOS SUPERVISIÓN:</strong> ${d.operarios}</td>
+                </tr>
+                <tr>
+                  <td colspan="2" style="border-left:none; border-right:none;"><strong>NOMBRE JEFE DE GRUPO:</strong> ${d.jefeGrupo}</td>
+                </tr>
+                <tr>
+                  <td style="border-left:none; border-bottom:none;">
+                    <strong>TURNO:</strong>
+                    <span class="fo04-chk">${chk(d.turnoUp.includes('MAÑANA') || d.turnoUp === 'M')}</span> MAÑANA &nbsp;
+                    <span class="fo04-chk">${chk(d.turnoUp.includes('TARDE') || d.turnoUp === 'T')}</span> TARDE &nbsp;
+                    <span class="fo04-chk">${chk(d.turnoUp.includes('NOCHE') || d.turnoUp === 'N')}</span> NOCHE
+                  </td>
+                  <td style="border-right:none; border-bottom:none;">
+                    <strong>¿FALTA PERSONAL?:</strong>
+                    <span class="fo04-chk">${chk(d.faltaSi)}</span> SÍ &nbsp;
+                    <span class="fo04-chk">${chk(!d.faltaSi)}</span> NO &nbsp;&nbsp;
+                    <strong>N°:</strong> ${d.cantFalta}
+                  </td>
+                </tr>
+              </table>
+            </div>
+
+            <!-- 2. CRONOGRAMA DE TRABAJO -->
+            <div class="fo04-box">
+              <div class="fo04-sec-bar">2. CRONOGRAMA DE TRABAJO:</div>
+              <div class="fo04-field-row">
+                <strong>CUMPLE</strong> <span class="fo04-chk">${chk(d.cronoCumple)}</span> &nbsp;&nbsp;
+                <strong>NO CUMPLE</strong> <span class="fo04-chk">${chk(!d.cronoCumple)}</span> &nbsp;&nbsp;&nbsp;&nbsp;
+                <strong>Detalle:</strong> ${d.cronoDetalle}
+              </div>
+            </div>
+
+            <!-- 3. RECORRIDO + MATERIALES Y MAQUINARIA -->
+            <div class="fo04-box">
+              <div class="fo04-sec-bar">3. RECORRIDO:</div>
+              <table class="fo04-tbl" style="border:none;">
+                <thead>
+                  <tr>
+                    <th style="width:26%; text-align:left; border-left:none;">INSTALACIONES / EVALUAR LIMPIEZA</th>
+                    <th style="width:10%;">DEFICIENTE</th>
+                    <th style="width:10%;">REGULAR</th>
+                    <th style="width:9%;">BUENO</th>
+                    <th style="width:45%; text-align:left; border-right:none;">OBSERVACIONES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${d.rows3.map(r => `
+                    <tr>
+                      <td style="border-left:none; font-weight:700;">${r.name}</td>
+                      <td style="text-align:center; font-weight:800;">${r.grade === 'DEFICIENTE' ? 'X' : ''}</td>
+                      <td style="text-align:center; font-weight:800; color:#b45309;">${r.grade === 'REGULAR' ? 'X' : ''}</td>
+                      <td style="text-align:center; font-weight:800;">${r.grade === 'BUENO' ? 'X' : ''}</td>
+                      <td style="border-right:none;">${r.obs}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              <div class="fo04-sec-bar" style="border-top:1px solid #444;">MATERIALES / IMPLEMENTOS Y MAQUINARIA:</div>
+              <div class="fo04-field-row">
+                <strong>FALTANTE:</strong> <span class="fo04-chk">${chk(d.matFaltSi)}</span> SÍ <span class="fo04-chk">${chk(!d.matFaltSi)}</span> NO &nbsp;
+                <strong>Detalle:</strong> ${d.matFaltDet} &nbsp;&nbsp;|&nbsp;&nbsp;
+                <strong>SOBRANTE:</strong> <span class="fo04-chk">${chk(d.matSobSi)}</span> SÍ <span class="fo04-chk">${chk(!d.matSobSi)}</span> NO &nbsp;
+                <strong>Detalle:</strong> ${d.matSobDet}
+              </div>
+              <div class="fo04-field-row">
+                <strong>MAQUINARIA:</strong> ${d.maquinariaDet}
+              </div>
+              <div class="fo04-field-row">
+                <strong>ASPIRADORAS (N° Placa):</strong> ${d.aspiradoras} &nbsp;&nbsp;&nbsp;
+                <strong>LUSTRADORAS (N° Placa):</strong> ${d.lustradoras} &nbsp;&nbsp;&nbsp;
+                <strong>Detalle:</strong> ${d.maqObs}
+              </div>
+            </div>
+
+            <!-- 4. PRESENTACION DEL PERSONAL -->
+            <div class="fo04-box">
+              <div class="fo04-sec-bar">4. PRESENTACION DEL PERSONAL:</div>
+              <div class="fo04-field-row">
+                <strong>EVALUACIÓN:</strong>
+                <span class="fo04-chk">${chk(d.presGrade === 'DEFICIENTE')}</span> DEFICIENTE &nbsp;
+                <span class="fo04-chk">${chk(d.presGrade === 'REGULAR')}</span> REGULAR &nbsp;
+                <span class="fo04-chk">${chk(d.presGrade === 'BUENO')}</span> BUENO &nbsp;&nbsp;&nbsp;
+                <strong>Detalle:</strong> ${d.presDet}
+              </div>
+            </div>
+
+            <!-- 5. SSOMA -->
+            <div class="fo04-box">
+              <table class="fo04-tbl" style="border:none;">
+                <thead>
+                  <tr>
+                    <th style="width:56%; text-align:left; border-left:none; border-top:none;">5. SSOMA (SEGURIDAD, SALUD OCUPACIONAL Y MEDIO AMBIENTE):</th>
+                    <th style="width:15%; border-top:none;">ESTADO</th>
+                    <th style="width:29%; text-align:left; border-right:none; border-top:none;">OBSERVACIONES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${d.ssomaRows.map(s => `
+                    <tr>
+                      <td style="border-left:none;">${s.q}</td>
+                      <td style="text-align:center; white-space:nowrap;">
+                        <span class="fo04-chk">${chk(s.ok)}</span> SÍ &nbsp;
+                        <span class="fo04-chk">${chk(!s.ok)}</span> NO
+                      </td>
+                      <td style="border-right:none;">${s.obs}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 6. OTROS -->
+            <div class="fo04-box">
+              <div class="fo04-sec-bar">6. OTROS:</div>
+              <div class="fo04-field-row"><strong>RECLAMOS DEL CLIENTE:</strong> ${d.reclamos}</div>
+              <div class="fo04-field-row"><strong>OBSERVACIONES COMPLEMENTARIAS:</strong> ${d.obsComp}</div>
+            </div>
+
+            <!-- FIRMAS -->
+            <div class="fo04-sign-grid">
+              <div class="fo04-sign-box">
+                <div style="border-top:1px solid #64748b; padding-top:4px;">
+                  <strong>FIRMA CLIENTE:</strong> ${d.firmaCli}
+                </div>
+              </div>
+              <div class="fo04-sign-box">
+                <div style="border-top:1px solid #64748b; padding-top:4px;">
+                  <strong>FIRMA ADS / SUPERVISOR:</strong> ${d.firmaSup}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="fo04-footer">
+            <span>SSAYS S.A.C. - SANEAMIENTO AMBIENTAL Y SERVICIOS S.A.C. | RUC 20102197211</span>
+            <span>Página 1 de 2</span>
+          </div>
+        </div>
+
+        <!-- PÁGINA 2 DE 2: ANEXO EVIDENCIAS FOTOGRÁFICAS -->
+        <div class="fo04-page">
+          <div>
+            <div class="fo04-box" style="padding:8px 12px; text-align:center;">
+              <div style="font-weight:800; font-size:11.5px; color:#0f172a; margin-bottom:3px;">
+                ANEXO: EVIDENCIAS FOTOGRÁFICAS DE SUPERVISIÓN EN SEDE
+              </div>
+              <div style="font-size:9.5px; color:#334155;">
+                <strong>Sede:</strong> ${d.sede} &nbsp;|&nbsp;
+                <strong>Cliente:</strong> ${d.cliente} &nbsp;|&nbsp;
+                <strong>Correlativo:</strong> N° ${d.cleanNro} &nbsp;|&nbsp;
+                <strong>Fecha:</strong> ${d.fechaSolo}
+              </div>
+            </div>
+
+            <div class="fo04-photo-grid">
+              <div class="fo04-photo-card">
+                <div class="fo04-photo-frame">
+                  <div style="font-size:28px; margin-bottom:6px;">🏢</div>
+                  <div style="font-weight:700; font-size:11px; color:#334155;">Foto Evidencia Sede</div>
+                  <div style="font-size:9px; color:#64748b; margin-top:3px;">Registro georreferenciado en campo</div>
+                </div>
+                <div style="font-size:9.5px; line-height:1.45;">
+                  <div><strong>Categoría:</strong> Llegada / Fachada</div>
+                  <div><strong>Fecha y Hora:</strong> ${d.fechaHora}</div>
+                  <div><strong>GPS:</strong> ${d.gps}</div>
+                  <div><strong>Obs:</strong> Llegada puntual del supervisor y registro GPS</div>
+                </div>
+              </div>
+
+              <div class="fo04-photo-card">
+                <div class="fo04-photo-frame">
+                  <div style="font-size:28px; margin-bottom:6px;">🧹</div>
+                  <div style="font-weight:700; font-size:11px; color:#334155;">Evidencia Supervisión Operativa</div>
+                  <div style="font-size:9px; color:#64748b; margin-top:3px;">${d.sede}</div>
+                </div>
+                <div style="font-size:9.5px; line-height:1.45;">
+                  <div><strong>Categoría:</strong> Recorrido de Áreas y Dotación (${d.operarios} op.)</div>
+                  <div><strong>Fecha y Hora:</strong> ${d.fechaHora}</div>
+                  <div><strong>GPS:</strong> ${d.gps}</div>
+                  <div><strong>Obs:</strong> ${d.obsComp}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="fo04-footer">
+            <span>SSAYS S.A.C. - Sistema de Supervisión y Control Operativo</span>
+            <span>Página 2 de 2</span>
+          </div>
+        </div>
+      `;
+    }
+
+    function getDriveUrlForInforme(rec) {
+      if (!rec) return '';
+      if (rec.pdfUrl && String(rec.pdfUrl).trim() !== '') return String(rec.pdfUrl).trim();
+      const m = DB.informes.find(r =>
+        (rec.nro && r.nro === rec.nro && r.pdfUrl) ||
+        (rec.sede && r.sede === rec.sede && r.pdfUrl)
+      );
+      return m ? String(m.pdfUrl).trim() : '';
+    }
+
+    function openDriveInforme(nro) {
+      const rec = DB.informes.find(r => r.nro === nro);
+      if (!rec) return;
+      const url = getDriveUrlForInforme(rec);
+      if (url) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } else {
+        alert(`La constancia ${rec.nro} aún no tiene enlace de PDF registrado en la columna AK (PDF_URL) de Google Sheets.`);
+      }
+    }
+
+    function openActaModalByNro(nro) {
+      const rec = DB.informes.find(r => r.nro === nro);
+      if (!rec) return;
+      const url = getDriveUrlForInforme(rec);
+      if (url) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      currentActaRecord = rec;
+      document.getElementById('actaModalTitle').textContent = `Constancia FO-04 ${rec.nro} — ${rec.cliente}`;
+      document.getElementById('actaModalSub').textContent = `${rec.sede} (${rec.distritoNombre}) • Sin PDF vinculado en Drive aún`;
+
+      const driveBtn = document.getElementById('btnDrivePdfLink');
+      driveBtn.style.display = 'none';
+
+      document.getElementById('actaPaperWrap').innerHTML = buildActaHTMLDocument(rec);
+      document.getElementById('actaModal').classList.add('open');
+    }
+
+    function closeActaModal() {
+      document.getElementById('actaModal').classList.remove('open');
+    }
+
+    function directDownloadPDFByNro(nro) {
+      openDriveInforme(nro);
+    }
+
+    // Genera y descarga directamente un archivo .PDF vectorial idéntico al modelo FO-04 VERSION: 04 (2 páginas A4)
+    function downloadOfficialFO04PDF() {
+      if (!currentActaRecord) return;
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        printCurrentActaPDF();
+        return;
+      }
+
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' }); // 595 x 842 pt
+      const d = enrichRecordForFO04(currentActaRecord);
+      const chk = c => c ? '[ X ]' : '[   ]';
+
+      // Helper para dibujar caja con borde #444
+      const drawBox = (x, y, w, h, fillRgb) => {
+        if (fillRgb) {
+          pdf.setFillColor(...fillRgb);
+          pdf.rect(x, y, w, h, 'F');
+        }
+        pdf.setDrawColor(68, 68, 68);
+        pdf.setLineWidth(0.7);
+        pdf.rect(x, y, w, h, 'S');
+      };
+
+      // ================= PÁGINA 1: CONSTANCIA FO-04 =================
+      // 1. Header Box (y=24, h=42)
+      drawBox(24, 24, 125, 42);
+      drawBox(149, 24, 322, 42);
+      drawBox(471, 24, 100, 14);
+      drawBox(471, 38, 100, 14);
+      drawBox(471, 52, 100, 14);
+
+      // Logo SSAYS (3 barras celestes + texto verde)
+      pdf.setFillColor(2, 132, 199);
+      pdf.rect(32, 34, 18, 5, 'F');
+      pdf.rect(32, 42, 14, 5, 'F');
+      pdf.rect(32, 50, 18, 5, 'F');
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(17);
+      pdf.setTextColor(0, 104, 55);
+      pdf.text('SSAYS', 55, 51);
+
+      // Título central
+      pdf.setTextColor(15, 23, 42);
+      pdf.setFontSize(10.5);
+      pdf.text('CONSTANCIA DE SUPERVISION OPERACIONES DE LIMPIEZA', 310, 48, { align: 'center' });
+
+      // Bloque derecho FO-04
+      pdf.setFontSize(8.5);
+      pdf.text('FO-04', 521, 34, { align: 'center' });
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('VERSION: 04', 521, 48, { align: 'center' });
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`N° ${d.cleanNro}`, 521, 62, { align: 'center' });
+
+      // 2. Datos Generales (y=66, h=52)
+      drawBox(24, 66, 300, 13);
+      drawBox(324, 66, 247, 13);
+      drawBox(24, 79, 547, 13);
+      drawBox(24, 92, 415, 13);
+      drawBox(439, 92, 132, 13);
+      drawBox(24, 105, 547, 13);
+
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', 'bold'); pdf.text('CLIENTE:', 28, 75);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.cliente, 70, 75);
+      pdf.setFont('helvetica', 'bold'); pdf.text('LOCAL / SEDE:', 328, 75);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.sede.slice(0, 36), 390, 75);
+
+      pdf.setFont('helvetica', 'bold'); pdf.text('DIRECCION:', 28, 88);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.direccion.slice(0, 88), 78, 88);
+
+      pdf.setFont('helvetica', 'bold'); pdf.text('SUPERVISOR DE OPERACIONES A CARGO:', 28, 101);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.supervisorCargo.slice(0, 42), 194, 101);
+      pdf.setFont('helvetica', 'bold'); pdf.text('DNI SUPERVISOR:', 443, 101);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.dniSupervisor, 518, 101);
+
+      pdf.setFont('helvetica', 'bold'); pdf.text('FECHA / HORA:', 28, 114);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.fechaHora, 92, 114);
+
+      // 3. Sección 1: VERIFICACION (y=121)
+      drawBox(24, 121, 547, 12, [241, 245, 249]);
+      pdf.setFont('helvetica', 'bold'); pdf.text('1. VERIFICACION:', 28, 130);
+
+      drawBox(24, 133, 385, 12);
+      drawBox(409, 133, 162, 12);
+      pdf.text('PERSONAL DESTACADO:', 28, 142);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.personalDestacado, 128, 142);
+      pdf.setFont('helvetica', 'bold'); pdf.text('N° OPERARIOS SUPERVISIÓN:', 413, 142);
+      pdf.setFont('helvetica', 'normal'); pdf.text(String(d.operarios), 535, 142);
+
+      drawBox(24, 145, 547, 12);
+      pdf.setFont('helvetica', 'bold'); pdf.text('NOMBRE JEFE DE GRUPO:', 28, 154);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.jefeGrupo, 135, 154);
+
+      drawBox(24, 157, 385, 12);
+      drawBox(409, 157, 162, 12);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`TURNO:  ${chk(d.turnoUp.includes('MAÑANA') || d.turnoUp==='M')} MAÑANA   ${chk(d.turnoUp.includes('TARDE') || d.turnoUp==='T')} TARDE   ${chk(d.turnoUp.includes('NOCHE') || d.turnoUp==='N')} NOCHE`, 28, 166);
+      pdf.text(`¿FALTA PERSONAL?: ${chk(d.faltaSi)} SÍ  ${chk(!d.faltaSi)} NO   N°: ${d.cantFalta}`, 413, 166);
+
+      // 4. Sección 2: CRONOGRAMA DE TRABAJO (y=172)
+      drawBox(24, 172, 547, 12, [241, 245, 249]);
+      pdf.text('2. CRONOGRAMA DE TRABAJO:', 28, 181);
+      drawBox(24, 184, 547, 13);
+      pdf.text(`CUMPLE ${chk(d.cronoCumple)}    NO CUMPLE ${chk(!d.cronoCumple)}`, 28, 193);
+      pdf.text('Detalle:', 185, 193);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.cronoDetalle.slice(0, 68), 218, 193);
+
+      // 5. Sección 3: RECORRIDO (y=200)
+      drawBox(24, 200, 547, 12, [241, 245, 249]);
+      pdf.setFont('helvetica', 'bold'); pdf.text('3. RECORRIDO:', 28, 209);
+
+      // Cabecera tabla recorrido
+      drawBox(24, 212, 155, 13, [241, 245, 249]);
+      drawBox(179, 212, 52, 13, [241, 245, 249]);
+      drawBox(231, 212, 48, 13, [241, 245, 249]);
+      drawBox(279, 212, 44, 13, [241, 245, 249]);
+      drawBox(323, 212, 248, 13, [241, 245, 249]);
+      pdf.setFontSize(7.5);
+      pdf.text('INSTALACIONES / EVALUAR LIMPIEZA', 28, 221);
+      pdf.text('DEFICIENTE', 205, 221, { align: 'center' });
+      pdf.text('REGULAR', 255, 221, { align: 'center' });
+      pdf.text('BUENO', 301, 221, { align: 'center' });
+      pdf.text('OBSERVACIONES', 327, 221);
+
+      let curY = 225;
+      d.rows3.forEach(r => {
+        drawBox(24, curY, 155, 12);
+        drawBox(179, curY, 52, 12);
+        drawBox(231, curY, 48, 12);
+        drawBox(279, curY, 44, 12);
+        drawBox(323, curY, 248, 12);
+
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(r.name, 28, curY + 8.5);
+        if (r.grade === 'DEFICIENTE') pdf.text('X', 205, curY + 8.5, { align: 'center' });
+        if (r.grade === 'REGULAR') pdf.text('X', 255, curY + 8.5, { align: 'center' });
+        if (r.grade === 'BUENO') pdf.text('X', 301, curY + 8.5, { align: 'center' });
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(String(r.obs || '').slice(0, 56), 327, curY + 8.5);
+        curY += 12;
+      });
+
+      // Subsección Materiales y Maquinaria
+      drawBox(24, curY, 547, 12, [241, 245, 249]);
+      pdf.setFont('helvetica', 'bold'); pdf.text('MATERIALES / IMPLEMENTOS Y MAQUINARIA:', 28, curY + 8.5);
+      curY += 12;
+
+      drawBox(24, curY, 273, 13);
+      drawBox(297, curY, 274, 13);
+      pdf.text(`FALTANTE: ${chk(d.matFaltSi)} SÍ  ${chk(!d.matFaltSi)} NO  Detalle: ${d.matFaltDet.slice(0, 26)}`, 28, curY + 9);
+      pdf.text(`SOBRANTE: ${chk(d.matSobSi)} SÍ  ${chk(!d.matSobSi)} NO  Detalle: ${d.matSobDet.slice(0, 26)}`, 301, curY + 9);
+      curY += 13;
+
+      drawBox(24, curY, 547, 13);
+      pdf.text('MAQUINARIA:', 28, curY + 9);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.maquinariaDet, 86, curY + 9);
+      curY += 13;
+
+      drawBox(24, curY, 547, 13);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`ASPIRADORAS (N° Placa): ${d.aspiradoras}     LUSTRADORAS (N° Placa): ${d.lustradoras}     Detalle: ${d.maqObs}`, 28, curY + 9);
+      curY += 16;
+
+      // 6. Sección 4: PRESENTACION DEL PERSONAL
+      drawBox(24, curY, 547, 12, [241, 245, 249]);
+      pdf.text('4. PRESENTACION DEL PERSONAL:', 28, curY + 8.5);
+      curY += 12;
+
+      drawBox(24, curY, 547, 13);
+      pdf.text(`EVALUACIÓN:  ${chk(d.presGrade==='DEFICIENTE')} DEFICIENTE   ${chk(d.presGrade==='REGULAR')} REGULAR   ${chk(d.presGrade==='BUENO')} BUENO`, 28, curY + 9);
+      pdf.text('Detalle:', 285, curY + 9);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.presDet.slice(0, 48), 316, curY + 9);
+      curY += 16;
+
+      // 7. Sección 5: SSOMA
+      drawBox(24, curY, 355, 13, [241, 245, 249]);
+      drawBox(379, 24 === 24 ? curY : curY, 65, 13, [241, 245, 249]);
+      drawBox(444, curY, 127, 13, [241, 245, 249]);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('5. SSOMA (SEGURIDAD, SALUD OCUPACIONAL Y MEDIO AMBIENTE):', 28, curY + 9);
+      pdf.text('ESTADO', 411, curY + 9, { align: 'center' });
+      pdf.text('OBSERVACIONES', 448, curY + 9);
+      curY += 13;
+
+      d.ssomaRows.forEach(s => {
+        drawBox(24, curY, 355, 14);
+        drawBox(379, curY, 65, 14);
+        drawBox(444, curY, 127, 14);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(s.q.slice(0, 74), 28, curY + 9.5);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(`${chk(s.ok)} SÍ ${chk(!s.ok)} NO`, 411, curY + 9.5, { align: 'center' });
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(String(s.obs || '').slice(0, 27), 448, curY + 9.5);
+        curY += 14;
+      });
+      curY += 4;
+
+      // 8. Sección 6: OTROS
+      drawBox(24, curY, 547, 12, [241, 245, 249]);
+      pdf.setFont('helvetica', 'bold'); pdf.text('6. OTROS:', 28, curY + 8.5);
+      curY += 12;
+
+      drawBox(24, curY, 547, 13);
+      pdf.text('RECLAMOS DEL CLIENTE:', 28, curY + 9);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.reclamos.slice(0, 75), 132, curY + 9);
+      curY += 13;
+
+      drawBox(24, curY, 547, 13);
+      pdf.setFont('helvetica', 'bold'); pdf.text('OBSERVACIONES COMPLEMENTARIAS:', 28, curY + 9);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.obsComp.slice(0, 66), 178, curY + 9);
+      curY += 18;
+
+      // 9. Cajas de Firmas
+      drawBox(24, curY, 263, 72);
+      drawBox(308, curY, 263, 72);
+      pdf.line(36, curY + 54, 275, curY + 54);
+      pdf.line(320, curY + 54, 559, curY + 54);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`FIRMA CLIENTE: ${d.firmaCli}`, 36, curY + 65);
+      pdf.text(`FIRMA ADS / SUPERVISOR: ${d.firmaSup}`, 320, curY + 65);
+
+      // Footer Página 1
+      pdf.setDrawColor(148, 163, 184);
+      pdf.line(24, 812, 571, 812);
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(71, 85, 105);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('SSAYS S.A.C. - SANEAMIENTO AMBIENTAL Y SERVICIOS S.A.C.  |  RUC 20102197211', 24, 824);
+      pdf.text('Página 1 de 2', 571, 824, { align: 'right' });
+
+      // ================= PÁGINA 2: ANEXO EVIDENCIAS FOTOGRÁFICAS =================
+      pdf.addPage();
+      drawBox(24, 24, 547, 36);
+      pdf.setTextColor(15, 23, 42);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(10.5);
+      pdf.text('ANEXO: EVIDENCIAS FOTOGRÁFICAS DE SUPERVISIÓN EN SEDE', 297, 39, { align: 'center' });
+      pdf.setFontSize(8.5);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text(`Sede: ${d.sede}   |   Cliente: ${d.cliente}   |   Correlativo: N° ${d.cleanNro}   |   Fecha: ${d.fechaSolo}`, 297, 52, { align: 'center' });
+
+      // Card 1: Llegada / Fachada
+      drawBox(24, 70, 266, 325);
+      drawBox(30, 76, 254, 235, [226, 232, 240]);
+      pdf.setTextColor(51, 65, 85);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(10);
+      pdf.text('Foto Evidencia Sede', 157, 192, { align: 'center' });
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.text('(Registro georreferenciado en campo)', 157, 206, { align: 'center' });
+
+      pdf.setTextColor(15, 23, 42);
+      pdf.setFontSize(8.5);
+      pdf.setFont('helvetica', 'bold'); pdf.text('Categoría:', 32, 326);
+      pdf.setFont('helvetica', 'normal'); pdf.text('Llegada / Fachada', 80, 326);
+      pdf.setFont('helvetica', 'bold'); pdf.text('Fecha y Hora:', 32, 339);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.fechaHora, 92, 339);
+      pdf.setFont('helvetica', 'bold'); pdf.text('GPS:', 32, 352);
+      pdf.setFont('helvetica', 'normal'); pdf.text(`Lat ${d.gps}`, 56, 352);
+      pdf.setFont('helvetica', 'bold'); pdf.text('Obs:', 32, 365);
+      pdf.setFont('helvetica', 'normal'); pdf.text('Llegada puntual del supervisor y registro GPS', 55, 365);
+
+      // Card 2: Supervisión Operativa
+      drawBox(305, 70, 266, 325);
+      drawBox(311, 76, 254, 235, [226, 232, 240]);
+      pdf.setTextColor(51, 65, 85);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(10);
+      pdf.text('Evidencia Supervisión Operativa', 438, 192, { align: 'center' });
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.text(d.sede.slice(0, 42), 438, 206, { align: 'center' });
+
+      pdf.setTextColor(15, 23, 42);
+      pdf.setFontSize(8.5);
+      pdf.setFont('helvetica', 'bold'); pdf.text('Categoría:', 313, 326);
+      pdf.setFont('helvetica', 'normal'); pdf.text(`Recorrido Áreas (${d.operarios} operarios)`, 361, 326);
+      pdf.setFont('helvetica', 'bold'); pdf.text('Fecha y Hora:', 313, 339);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.fechaHora, 373, 339);
+      pdf.setFont('helvetica', 'bold'); pdf.text('GPS:', 313, 352);
+      pdf.setFont('helvetica', 'normal'); pdf.text(`Lat ${d.gps}`, 337, 352);
+      pdf.setFont('helvetica', 'bold'); pdf.text('Obs:', 313, 365);
+      pdf.setFont('helvetica', 'normal'); pdf.text(d.obsComp.slice(0, 44), 336, 365);
+
+      // Footer Página 2
+      pdf.setDrawColor(148, 163, 184);
+      pdf.line(24, 812, 571, 812);
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(71, 85, 105);
+      pdf.text('SSAYS S.A.C. - Sistema de Supervisión y Control Operativo', 24, 824);
+      pdf.text('Página 2 de 2', 571, 824, { align: 'right' });
+
+      const cleanCli = d.cliente.replace(/[^a-zA-Z0-9]/g, '_');
+      pdf.save(`CONSTANCIA_SUPERVISION_N_${d.cleanNro}_${cleanCli}.pdf`);
+    }
+
+    function printCurrentActaPDF() {
+      if (!currentActaRecord) return;
+      const docContent = buildActaHTMLDocument(currentActaRecord);
+      const win = window.open('', '_blank', 'width=900,height=800');
+      win.document.write(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+          <meta charset="UTF-8">
+          <title>CONSTANCIA_SUPERVISION_${currentActaRecord.nro}</title>
+          <style>
+            body { margin: 0; padding: 0; background: #fff; font-family: Arial, Helvetica, sans-serif; }
+            .fo04-page { width: 210mm; min-height: 296mm; padding: 10mm 12mm; box-sizing: border-box; page-break-after: always; display: flex; flex-direction: column; justify-content: space-between; font-size: 9.5px; }
+            .fo04-page:last-child { page-break-after: auto; }
+            .fo04-box { border: 1px solid #444; margin-bottom: 5px; }
+            .fo04-sec-bar { background: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; border-bottom: 1px solid #444; padding: 3px 6px; font-weight: 700; font-size: 9px; }
+            .fo04-tbl { width: 100%; border-collapse: collapse; font-size: 9px; }
+            .fo04-tbl th, .fo04-tbl td { border: 1px solid #444; padding: 3px 5px; }
+            .fo04-tbl th { background: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .fo04-field-row { padding: 3.5px 6px; border-bottom: 1px solid #cbd5e1; font-size: 9px; }
+            .fo04-field-row:last-child { border-bottom: none; }
+            .fo04-sign-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 8px; }
+            .fo04-sign-box { border: 1px solid #444; height: 74px; display: flex; flex-direction: column; justify-content: flex-end; padding: 6px; }
+            .fo04-footer { border-top: 1px solid #94a3b8; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; color: #475569; }
+            .fo04-photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
+            .fo04-photo-card { border: 1px solid #444; padding: 6px; }
+            .fo04-photo-frame { height: 220px; background: #e2e8f0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; display: flex; flex-direction: column; align-items: center; justify-content: center; margin-bottom: 6px; }
+        
+    /* Selector de Periodo (Manual + Relativo estilo Power BI / Looker Studio) */
+    .period-bar {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .period-trigger {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #f8fafc;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    .period-trigger:hover {
+      border-color: var(--ssays-cyan);
+      background: rgba(20, 34, 54, 0.95);
+    }
+    .period-trigger .p-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+    }
+    .period-trigger .p-badge {
+      font-size: 9.5px;
+      font-weight: 800;
+      padding: 1.5px 6px;
+      border-radius: 5px;
+      background: rgba(0, 189, 242, 0.18);
+      color: var(--ssays-cyan);
+    }
+    .period-popover {
+      position: fixed;
+      top: 132px;
+      left: 368px;
+      width: 295px;
+      background: #0b1523;
+      border: 1px solid var(--ssays-cyan);
+      border-radius: 12px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.88);
+      z-index: 80;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+    }
+    .period-popover.open { display: flex; }
+    .pp-tabs {
+      display: flex;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(6, 13, 20, 0.7);
+    }
+    .pp-tab {
+      flex: 1;
+      padding: 9px 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-bottom: 2.5px solid transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.15s;
+    }
+    .pp-tab:hover { color: #fff; }
+    .pp-tab.active {
+      color: #34d399;
+      border-bottom-color: #009640;
+      background: rgba(0, 150, 64, 0.1);
+    }
+    .pp-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .cal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 800;
+      color: #f8fafc;
+    }
+    .cal-nav {
+      display: flex;
+      gap: 4px;
+    }
+    .cal-nav button {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #cbd5e1;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .cal-nav button:hover {
+      border-color: var(--ssays-cyan);
+      color: #fff;
+    }
+    .cal-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      text-align: center;
+      font-size: 9.5px;
+      font-weight: 700;
+      color: #64748b;
+    }
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px 0;
+    }
+    .cal-day {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: #e2e8f0;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.12s;
+    }
+    .cal-day.other-month { color: #475569; }
+    .cal-day:hover { background: rgba(0, 189, 242, 0.2); border-radius: 6px; }
+    .cal-day.in-range {
+      background: rgba(0, 150, 64, 0.26);
+      color: #a7f3d0;
+    }
+    .cal-day.range-start {
+      background: #006837 !important;
+      color: #ffffff !important;
+      font-weight: 800;
+      border-radius: 99px 0 0 99px;
+    }
+    .cal-day.range-end {
+      background: #006837 !important;
+      color: #ffffff !important;
+      font-weight: 800;
+      border-radius: 0 99px 99px 0;
+    }
+    .cal-day.range-start.range-end {
+      border-radius: 99px;
+    }
+    .cal-day.has-data::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #00bdf2;
+    }
+    .rel-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .rel-opt {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: #cbd5e1;
+      padding: 7px 10px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.15s;
+    }
+    .rel-opt:hover { border-color: var(--ssays-cyan); color: #fff; }
+    .rel-opt.active {
+      background: rgba(0, 150, 64, 0.24);
+      border-color: #009640;
+      color: #6ee7b7;
+    }
+    .pp-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 9px 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(6, 13, 20, 0.65);
+    }
+    .btn-pp-clear {
+      background: transparent;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #94a3b8;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-pp-clear:hover { color: #fff; border-color: #fff; }
+    .btn-pp-apply {
+      background: #006837;
+      border: 1px solid #009640;
+      color: #ffffff;
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .btn-pp-apply:hover { background: #008245; }
+
+
+    /* Filtro Único Global de Periodo en Barra Superior */
+    .global-period-pill {
+      background: var(--panel-bg);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      backdrop-filter: blur(14px);
+      border-radius: 12px;
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    }
+    .global-period-pill:hover {
+      border-color: var(--ssays-cyan);
+      background: rgba(15, 28, 44, 0.95);
+    }
+    .global-period-pill.filtered {
+      border-color: #10b981;
+      background: rgba(6, 40, 28, 0.92);
+    }
+    .gp-badge {
+      font-size: 9.5px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: rgba(0, 189, 242, 0.18);
+      color: var(--ssays-cyan);
+    }
+    .global-period-pill.filtered .gp-badge {
+      background: rgba(16, 185, 129, 0.25);
+      color: #34d399;
+    }
+    .pp-range-inputs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.85);
+      padding: 7px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .pp-range-box {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .pp-range-box label {
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      color: var(--ssays-cyan);
+    }
+    .pp-range-box input[type="date"] {
+      background: #060d14;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #f8fafc;
+      font-size: 10.5px;
+      padding: 3px 5px;
+      border-radius: 5px;
+      outline: none;
+      width: 100%;
+      color-scheme: dark;
+    }
+    .pp-range-box input[type="date"]:focus {
+      border-color: #10b981;
+    }
+
+  </style>
+        </head>
+        <body>
+          ${docContent}
+          <script>window.onload = function() { setTimeout(function() { window.print(); }, 250); };<\/script>
+        </body>
+        </html>
+      `);
+      win.document.close();
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedUrl = localStorage.getItem('ssays_gsheet_url');
+      if (savedUrl && !savedUrl.includes('1dEOnu0pjgFmHAdh2-1lIpUrpDe0c17MXONra8XedsSE') && document.getElementById('gsheetUrlInput')) {
+        document.getElementById('gsheetUrlInput').value = savedUrl;
+      } else {
+        localStorage.setItem('ssays_gsheet_url', DEFAULT_SHEET_URL);
+      }
+      init3D();
+      renderAll();
+      syncFromGoogleSheet(false);
+      restartAutoSync();
+    });
+  </script>
+</body>
+</html>
